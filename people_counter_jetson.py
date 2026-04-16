@@ -69,11 +69,18 @@ def atomic_write_json(path: Path, data: dict) -> None:
     os.replace(tmp, path)
 
 
+def first_existing_path(candidates: List[str]) -> Optional[str]:
+    for p in candidates:
+        if p and Path(p).exists():
+            return p
+    return None
+
+
 def default_config() -> dict:
     return {
         "settings": {
             "interval_sec": 60,
-            "person_class_id": 0,
+            "person_class_id": 2,
             "min_crossing_gap_frames": 12,
             "track_max_idle_frames": 120,
             "line_deadband_px": 3.0,
@@ -94,13 +101,13 @@ def default_config() -> dict:
             },
         },
         "deepstream": {
-            "pgie_config_path": "/opt/nvidia/deepstream/deepstream/samples/configs/deepstream-app/config_infer_primary_peoplenet.txt",
+            "pgie_config_path": "/opt/nvidia/deepstream/deepstream-7.1/samples/configs/deepstream-app/config_infer_primary.txt",
             "tracker": {
                 "tracker-width": 640,
                 "tracker-height": 384,
                 "gpu-id": 0,
-                "ll-lib-file": "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so",
-                "ll-config-file": "/opt/nvidia/deepstream/deepstream/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml",
+                "ll-lib-file": "/opt/nvidia/deepstream/deepstream-7.1/lib/libnvds_nvmultiobjecttracker.so",
+                "ll-config-file": "/opt/nvidia/deepstream/deepstream-7.1/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml",
                 "enable-batch-process": 1,
                 "enable-past-frame": 0,
             },
@@ -514,28 +521,66 @@ def calibrate_lines(store: ConfigStore) -> None:
     print("Calibracion iniciada. Se abrira una ventana por camara.")
     print("Tip: presiona Enter para guardar cada camara.")
 
+    def _capture_frame(uri: str):
+        backends = []
+        if hasattr(cv2, "CAP_FFMPEG"):
+            backends.append(("ffmpeg", cv2.CAP_FFMPEG, uri))
+        if hasattr(cv2, "CAP_GSTREAMER"):
+            backends.append(("gstreamer-uri", cv2.CAP_GSTREAMER, uri))
+            gst_uri = uri.replace("\\", "\\\\").replace('"', '\\"')
+            gst_pipelines = [
+                f'rtspsrc location="{gst_uri}" latency=200 protocols=tcp drop-on-latency=true ! '
+                "rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! "
+                "video/x-raw,format=BGR ! appsink sync=false drop=true max-buffers=1",
+                f'rtspsrc location="{gst_uri}" latency=200 protocols=tcp drop-on-latency=true ! '
+                "rtph265depay ! h265parse ! avdec_h265 ! videoconvert ! "
+                "video/x-raw,format=BGR ! appsink sync=false drop=true max-buffers=1",
+            ]
+            for pipe in gst_pipelines:
+                backends.append(("gstreamer-pipe", cv2.CAP_GSTREAMER, pipe))
+        backends.append(("default", None, uri))
+
+        best = None
+        for bname, api, source in backends:
+            cap = cv2.VideoCapture(source, api) if api is not None else cv2.VideoCapture(source)
+            if not cap.isOpened():
+                cap.release()
+                continue
+            candidate = None
+            for _ in range(120):
+                ok, fr = cap.read()
+                if not ok or fr is None:
+                    time.sleep(0.03)
+                    continue
+                # Evita elegir frame casi plano/gris cuando OpenCV entrega basura de decodificacion.
+                std = cv2.meanStdDev(fr)[1]
+                avg_std = float(std.mean())
+                if avg_std > 2.0:
+                    candidate = fr
+                    break
+                if candidate is None:
+                    candidate = fr
+            cap.release()
+            if candidate is not None:
+                best = (candidate, bname)
+                if bname != "default":
+                    return best
+        return best
+
     for cam in cams:
         uri = cam.get("uri", "")
         if not uri or "rtsp://" not in uri:
             print(f"[WARN] Saltando {cam.get('name', cam.get('id'))}: URI RTSP invalida.")
             continue
-        cap = cv2.VideoCapture(uri)
-        if not cap.isOpened():
-            print(f"[WARN] No se pudo abrir {cam.get('name', cam.get('id'))}: {uri}")
-            continue
 
-        frame = None
-        for _ in range(60):
-            ok, fr = cap.read()
-            if ok and fr is not None:
-                frame = fr
-                break
-            time.sleep(0.05)
-        cap.release()
+        grabbed = _capture_frame(uri)
+        frame = grabbed[0] if grabbed else None
+        backend_name = grabbed[1] if grabbed else "none"
 
         if frame is None:
             print(f"[WARN] Sin frame para {cam.get('name', cam.get('id'))}.")
             continue
+        print(f"[INFO] {cam.get('name', cam.get('id'))}: frame obtenido con backend {backend_name}.")
 
         frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_AREA)
         line = draw_line_ui(frame, cam.get("name", cam.get("id")), cam.get("line", {}))
@@ -653,7 +698,16 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> None:
     ds_cfg = store.data["deepstream"]
     pgie_config_path = ds_cfg.get("pgie_config_path")
     if not pgie_config_path or not Path(pgie_config_path).exists():
-        raise RuntimeError(f"pgie_config_path no existe: {pgie_config_path}")
+        pgie_candidates = [
+            pgie_config_path or "",
+            "/opt/nvidia/deepstream/deepstream-7.1/samples/configs/deepstream-app/config_infer_primary.txt",
+            "/opt/nvidia/deepstream/deepstream/samples/configs/deepstream-app/config_infer_primary.txt",
+        ]
+        resolved = first_existing_path(pgie_candidates)
+        if resolved is None:
+            raise RuntimeError(f"pgie_config_path no existe: {pgie_config_path}")
+        print(f"[WARN] pgie_config_path ajustado automaticamente a: {resolved}")
+        pgie_config_path = resolved
 
     if not no_display and not os.environ.get("DISPLAY"):
         print("[WARN] DISPLAY no definido (entorno headless). Se activa --no-display automaticamente.")
@@ -739,7 +793,41 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> None:
     if pgie.get_property("batch-size") != len(cameras):
         pgie.set_property("batch-size", len(cameras))
 
-    tracker_cfg = ds_cfg.get("tracker", {})
+    tracker_cfg = dict(ds_cfg.get("tracker", {}))
+    ll_lib_path = str(tracker_cfg.get("ll-lib-file", "")).strip()
+    if not ll_lib_path or not Path(ll_lib_path).exists():
+        lib_candidates = [
+            ll_lib_path,
+            "/opt/nvidia/deepstream/deepstream-7.1/lib/libnvds_nvmultiobjecttracker.so",
+            "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so",
+        ]
+        resolved = first_existing_path(lib_candidates)
+        if resolved is None:
+            raise RuntimeError(f"tracker ll-lib-file no existe: {ll_lib_path}")
+        print(f"[WARN] tracker ll-lib-file ajustado automaticamente a: {resolved}")
+        tracker_cfg["ll-lib-file"] = resolved
+
+    ll_cfg_path = str(tracker_cfg.get("ll-config-file", "")).strip()
+    if not ll_cfg_path or not Path(ll_cfg_path).exists():
+        cfg_candidates = [
+            ll_cfg_path,
+            "/opt/nvidia/deepstream/deepstream-7.1/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml",
+            "/opt/nvidia/deepstream/deepstream/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml",
+        ]
+        resolved = first_existing_path(cfg_candidates)
+        if resolved is None:
+            raise RuntimeError(f"tracker ll-config-file no existe: {ll_cfg_path}")
+        print(f"[WARN] tracker ll-config-file ajustado automaticamente a: {resolved}")
+        tracker_cfg["ll-config-file"] = resolved
+
+    if no_display:
+        active_tracker_cfg = str(tracker_cfg.get("ll-config-file", ""))
+        if "nvdcf" in active_tracker_cfg.lower():
+            iou_candidate = str(Path(active_tracker_cfg).with_name("config_tracker_IOU.yml"))
+            if Path(iou_candidate).exists():
+                print(f"[WARN] Modo headless: usando tracker IOU para evitar fallos EGL de NvDCF: {iou_candidate}")
+                tracker_cfg["ll-config-file"] = iou_candidate
+
     for key, value in tracker_cfg.items():
         _set_if_prop_exists(tracker, key, value)
 

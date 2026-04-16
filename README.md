@@ -62,6 +62,8 @@ Sin visualización:
 python3 people_counter_jetson.py --no-display
 ```
 
+Nota: el script solo fuerza `--no-display` si no detecta `DISPLAY` (entorno headless real).
+
 ## Qué publica por MQTT
 
 Cada `interval_sec` (por defecto 60s) publica:
