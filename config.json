@@ -113,5 +113,25 @@
     },
     "pending_mqtt": [],
     "last_minute_payload_utc": null
+  },
+  "runtime": {
+    "backend": "deepstream"
+  },
+  "opencv": {
+    "detector": "hog",
+    "detect_every_n_frames": 2,
+    "hog_win_stride": [
+      8,
+      8
+    ],
+    "hog_padding": [
+      8,
+      8
+    ],
+    "hog_scale": 1.05,
+    "hog_hit_threshold": 0.0,
+    "hog_min_confidence": 0.0,
+    "tracker_max_disappeared_frames": 20,
+    "tracker_max_match_distance_px": 80.0
   }
 }

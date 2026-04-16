@@ -1,4 +1,4 @@
-# People Counter Jetson (DeepStream + MQTT)
+# People Counter Jetson (DeepStream u OpenCV + MQTT)
 
 Script para Jetson Orin Nano que cuenta personas por cruce de línea en múltiples cámaras RTSP y publica métricas por MQTT cada 60 segundos.
 
@@ -32,7 +32,9 @@ sudo apt-get install -y python3-opencv python3-gi
 1. Edita `config.json`:
 - `settings.mqtt.host`, `port`, `topic`, credenciales.
 - `cameras[].uri` con tus RTSP reales.
-- (Opcional) `deepstream.pgie_config_path` y `deepstream.tracker.*` si usas otras rutas/configs.
+- `runtime.backend`: `deepstream` u `opencv`.
+- (Opcional) `deepstream.pgie_config_path` y `deepstream.tracker.*` si usas DeepStream.
+- (Opcional) `opencv.*` para ajustar detector/tracker en backend OpenCV.
 
 2. Calibra líneas de conteo:
 
@@ -56,6 +58,13 @@ Con visualización (mosaico de cámaras):
 python3 people_counter_jetson.py
 ```
 
+Forzar backend por CLI:
+
+```bash
+python3 people_counter_jetson.py --backend deepstream
+python3 people_counter_jetson.py --backend opencv
+```
+
 Sin visualización:
 
 ```bash
@@ -63,6 +72,16 @@ python3 people_counter_jetson.py --no-display
 ```
 
 Nota: el script solo fuerza `--no-display` si no detecta `DISPLAY` (entorno headless real).
+
+
+## Backends
+
+- `deepstream`:
+  - Mejor rendimiento y uso de aceleración NVIDIA.
+  - Requiere entorno DeepStream/GStreamer correctamente configurado.
+- `opencv`:
+  - Fallback útil cuando hay problemas de EGL/X11 con DeepStream.
+  - Usa detector HOG + tracker centroid (menos preciso/eficiente que DeepStream en muchos escenarios).
 
 ## Qué publica por MQTT
 

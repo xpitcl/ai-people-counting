@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-People counter for Jetson Orin Nano using NVIDIA DeepStream + MQTT.
+People counter for Jetson Orin Nano using NVIDIA DeepStream or OpenCV + MQTT.
 
 Features:
 - Multi-RTSP ingest (4+ cameras supported).
@@ -8,7 +8,7 @@ Features:
 - In/Out/Inside counting per camera based on line crossing direction.
 - Tiled display with per-camera counters.
 - MQTT publish every minute, with persistent offline queue/retry.
-- Optional per-person attributes from DeepStream classifier metadata.
+- Optional per-person attributes from DeepStream classifier metadata (DeepStream backend).
 
 Usage:
 1) Create template config:
@@ -21,6 +21,9 @@ Usage:
 
 4) Run counter:
    python3 people_counter_jetson.py
+
+5) Optional backend override:
+   python3 people_counter_jetson.py --backend opencv
 """
 
 import argparse
@@ -46,6 +49,11 @@ try:
     import paho.mqtt.client as mqtt
 except Exception:
     mqtt = None
+
+try:
+    import numpy as np
+except Exception:
+    np = None
 
 pyds = None
 
@@ -99,6 +107,18 @@ def default_config() -> dict:
                 "retain": False,
                 "keepalive": 30,
             },
+        },
+        "runtime": {"backend": "deepstream"},
+        "opencv": {
+            "detector": "hog",
+            "detect_every_n_frames": 2,
+            "hog_win_stride": [8, 8],
+            "hog_padding": [8, 8],
+            "hog_scale": 1.05,
+            "hog_hit_threshold": 0.0,
+            "hog_min_confidence": 0.0,
+            "tracker_max_disappeared_frames": 20,
+            "tracker_max_match_distance_px": 80.0,
         },
         "deepstream": {
             "pgie_config_path": "/opt/nvidia/deepstream/deepstream-7.1/samples/configs/deepstream-app/config_infer_primary.txt",
@@ -166,9 +186,23 @@ class ConfigStore:
 
     def _ensure_runtime_defaults(self) -> None:
         self.data.setdefault("settings", {})
+        self.data.setdefault("runtime", {})
+        self.data.setdefault("opencv", {})
         self.data.setdefault("deepstream", {})
         self.data.setdefault("cameras", [])
         self.data.setdefault("state", {})
+
+        self.data["runtime"].setdefault("backend", "deepstream")
+        self.data["opencv"].setdefault("detector", "hog")
+        self.data["opencv"].setdefault("detect_every_n_frames", 2)
+        self.data["opencv"].setdefault("hog_win_stride", [8, 8])
+        self.data["opencv"].setdefault("hog_padding", [8, 8])
+        self.data["opencv"].setdefault("hog_scale", 1.05)
+        self.data["opencv"].setdefault("hog_hit_threshold", 0.0)
+        self.data["opencv"].setdefault("hog_min_confidence", 0.0)
+        self.data["opencv"].setdefault("tracker_max_disappeared_frames", 20)
+        self.data["opencv"].setdefault("tracker_max_match_distance_px", 80.0)
+
         self.data["state"].setdefault("totals", {})
         self.data["state"].setdefault("pending_mqtt", [])
         self.data["state"].setdefault("last_minute_payload_utc", None)
@@ -304,6 +338,8 @@ class CounterCore:
 
     def _extract_attrs(self, obj_meta) -> Dict[str, str]:
         attrs: Dict[str, str] = {}
+        if obj_meta is None or pyds is None:
+            return attrs
         c_list = obj_meta.classifier_meta_list
         while c_list is not None:
             try:
@@ -329,7 +365,7 @@ class CounterCore:
         frame_num: int,
         object_id: int,
         centroid: Tuple[float, float],
-        obj_meta,
+        obj_meta=None,
     ) -> None:
         settings = self.store.data["settings"]
         cam_id = str(cam["id"])
@@ -676,6 +712,386 @@ def bus_call(bus, message, loop):
     return True
 
 
+def _open_capture_with_fallback(uri: str):
+    if cv2 is None:
+        return (None, "none")
+
+    backends = []
+    if hasattr(cv2, "CAP_FFMPEG"):
+        backends.append(("ffmpeg", cv2.CAP_FFMPEG, uri))
+    if hasattr(cv2, "CAP_GSTREAMER"):
+        backends.append(("gstreamer-uri", cv2.CAP_GSTREAMER, uri))
+        gst_uri = uri.replace("\\", "\\\\").replace('"', '\\"')
+        gst_pipelines = [
+            f'rtspsrc location="{gst_uri}" latency=200 protocols=tcp drop-on-latency=true ! '
+            "rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! "
+            "video/x-raw,format=BGR ! appsink sync=false drop=true max-buffers=1",
+            f'rtspsrc location="{gst_uri}" latency=200 protocols=tcp drop-on-latency=true ! '
+            "rtph265depay ! h265parse ! avdec_h265 ! videoconvert ! "
+            "video/x-raw,format=BGR ! appsink sync=false drop=true max-buffers=1",
+        ]
+        for pipe in gst_pipelines:
+            backends.append(("gstreamer-pipe", cv2.CAP_GSTREAMER, pipe))
+    backends.append(("default", None, uri))
+
+    for bname, api, source in backends:
+        cap = cv2.VideoCapture(source, api) if api is not None else cv2.VideoCapture(source)
+        if cap.isOpened():
+            return (cap, bname)
+        cap.release()
+    return (None, "none")
+
+
+def _blank_frame(w: int, h: int, text: str):
+    if np is None:
+        raise RuntimeError("Falta dependencia: numpy para backend OpenCV")
+    frame = np.zeros((h, w, 3), dtype=np.uint8)
+    frame[:] = (35, 35, 35)
+    cv2.putText(frame, text, (20, int(h / 2)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (220, 220, 220), 2, cv2.LINE_AA)
+    return frame
+
+
+def _draw_overlay_opencv(frame, cam: dict, core: CounterCore):
+    cam_id = str(cam["id"])
+    totals = core.get_totals(cam_id)
+    inside = int(totals["in"]) - int(totals["out"])
+    text = f"{cam.get('name', cam_id)} | In:{int(totals['in'])} Out:{int(totals['out'])} Inside:{inside}"
+
+    line = cam.get("line", {})
+    p1 = tuple(line.get("p1", [100, 100]))
+    p2 = tuple(line.get("p2", [400, 100]))
+    in_dir = normalize_vec(line.get("in_direction", [0, -1]))
+
+    cv2.line(frame, p1, p2, (0, 255, 0), 2)
+    cx = int((p1[0] + p2[0]) / 2)
+    cy = int((p1[1] + p2[1]) / 2)
+    arrow_len = 70
+    arrow_p2 = (int(cx + in_dir[0] * arrow_len), int(cy + in_dir[1] * arrow_len))
+    cv2.arrowedLine(frame, (cx, cy), arrow_p2, (255, 200, 0), 2, tipLength=0.25)
+
+    cv2.rectangle(frame, (8, 8), (min(frame.shape[1] - 8, 620), 42), (0, 0, 0), -1)
+    cv2.putText(frame, text, (15, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+
+
+def _tile_frames(frames, cols: int, cell_w: int, cell_h: int):
+    if np is None:
+        raise RuntimeError("Falta dependencia: numpy para backend OpenCV")
+    n = len(frames)
+    rows = int(math.ceil(n / max(cols, 1)))
+    canvas = np.zeros((rows * cell_h, cols * cell_w, 3), dtype=np.uint8)
+    canvas[:] = (20, 20, 20)
+
+    for i, fr in enumerate(frames):
+        r = i // cols
+        c = i % cols
+        y1, y2 = r * cell_h, (r + 1) * cell_h
+        x1, x2 = c * cell_w, (c + 1) * cell_w
+        canvas[y1:y2, x1:x2] = fr
+    return canvas
+
+
+def _detect_people_hog(frame, hog, opencv_cfg: dict):
+    hit_threshold = float(opencv_cfg.get("hog_hit_threshold", 0.0))
+    scale = float(opencv_cfg.get("hog_scale", 1.05))
+    win_stride = opencv_cfg.get("hog_win_stride", [8, 8])
+    padding = opencv_cfg.get("hog_padding", [8, 8])
+    min_conf = float(opencv_cfg.get("hog_min_confidence", 0.0))
+
+    try:
+        ws = (int(win_stride[0]), int(win_stride[1]))
+    except Exception:
+        ws = (8, 8)
+    try:
+        pad = (int(padding[0]), int(padding[1]))
+    except Exception:
+        pad = (8, 8)
+
+    rects, weights = hog.detectMultiScale(
+        frame,
+        hitThreshold=hit_threshold,
+        winStride=ws,
+        padding=pad,
+        scale=scale,
+    )
+
+    detections = []
+    if len(rects) == 0:
+        return detections
+
+    for (x, y, w, h), wt in zip(rects, weights):
+        conf = float(wt[0] if hasattr(wt, "__len__") else wt)
+        if conf < min_conf:
+            continue
+        x1, y1 = int(x), int(y)
+        x2, y2 = int(x + w), int(y + h)
+        detections.append((x1, y1, x2, y2, conf))
+    return detections
+
+
+class SimpleCentroidTracker:
+    def __init__(self, max_disappeared: int = 20, max_distance: float = 80.0):
+        self.next_object_id = 1
+        self.objects: Dict[int, Tuple[float, float]] = {}
+        self.boxes: Dict[int, Tuple[int, int, int, int]] = {}
+        self.scores: Dict[int, float] = {}
+        self.disappeared: Dict[int, int] = {}
+        self.max_disappeared = max(1, int(max_disappeared))
+        self.max_distance = float(max_distance)
+
+    def _register(self, centroid, bbox, score):
+        oid = self.next_object_id
+        self.next_object_id += 1
+        self.objects[oid] = centroid
+        self.boxes[oid] = bbox
+        self.scores[oid] = float(score)
+        self.disappeared[oid] = 0
+
+    def _deregister(self, object_id: int):
+        self.objects.pop(object_id, None)
+        self.boxes.pop(object_id, None)
+        self.scores.pop(object_id, None)
+        self.disappeared.pop(object_id, None)
+
+    def _build_result(self):
+        result = {}
+        for oid, centroid in self.objects.items():
+            result[oid] = {
+                "centroid": centroid,
+                "bbox": self.boxes.get(oid),
+                "score": self.scores.get(oid, 0.0),
+            }
+        return result
+
+    def update(self, detections):
+        if len(detections) == 0:
+            for oid in list(self.disappeared.keys()):
+                self.disappeared[oid] += 1
+                if self.disappeared[oid] > self.max_disappeared:
+                    self._deregister(oid)
+            return self._build_result()
+
+        input_centroids = []
+        input_boxes = []
+        input_scores = []
+        for (x1, y1, x2, y2, score) in detections:
+            cx = float((x1 + x2) / 2.0)
+            cy = float((y1 + y2) / 2.0)
+            input_centroids.append((cx, cy))
+            input_boxes.append((int(x1), int(y1), int(x2), int(y2)))
+            input_scores.append(float(score))
+
+        if len(self.objects) == 0:
+            for c, b, sc in zip(input_centroids, input_boxes, input_scores):
+                self._register(c, b, sc)
+            return self._build_result()
+
+        object_ids = list(self.objects.keys())
+        object_centroids = list(self.objects.values())
+
+        if np is None:
+            raise RuntimeError("Falta dependency numpy para tracking OpenCV")
+
+        D = np.zeros((len(object_centroids), len(input_centroids)), dtype=np.float32)
+        for i, (ox, oy) in enumerate(object_centroids):
+            for j, (ix, iy) in enumerate(input_centroids):
+                D[i, j] = math.hypot(ix - ox, iy - oy)
+
+        rows = D.min(axis=1).argsort()
+        cols = D.argmin(axis=1)[rows]
+
+        used_rows = set()
+        used_cols = set()
+
+        for row, col in zip(rows, cols):
+            if row in used_rows or col in used_cols:
+                continue
+            if D[row, col] > self.max_distance:
+                continue
+
+            oid = object_ids[row]
+            self.objects[oid] = input_centroids[col]
+            self.boxes[oid] = input_boxes[col]
+            self.scores[oid] = input_scores[col]
+            self.disappeared[oid] = 0
+            used_rows.add(row)
+            used_cols.add(col)
+
+        unused_rows = set(range(D.shape[0])) - used_rows
+        unused_cols = set(range(D.shape[1])) - used_cols
+
+        for row in unused_rows:
+            oid = object_ids[row]
+            self.disappeared[oid] += 1
+            if self.disappeared[oid] > self.max_disappeared:
+                self._deregister(oid)
+
+        for col in unused_cols:
+            self._register(input_centroids[col], input_boxes[col], input_scores[col])
+
+        return self._build_result()
+
+
+def run_counter_opencv(store: ConfigStore, no_display: bool = False) -> None:
+    if cv2 is None:
+        raise RuntimeError("Falta dependencia: python3-opencv")
+    if np is None:
+        raise RuntimeError("Falta dependencia: numpy")
+
+    cameras = store.data.get("cameras", [])
+    if len(cameras) == 0:
+        raise RuntimeError("No hay camaras en configuracion.")
+    if len(cameras) < 4:
+        print("[WARN] Tienes menos de 4 camaras configuradas. El script soporta 4+ sin problema.")
+
+    settings = store.data["settings"]
+    opencv_cfg = store.data.get("opencv", {})
+
+    if not no_display and not os.environ.get("DISPLAY"):
+        print("[WARN] DISPLAY no definido (entorno headless). Se activa --no-display automaticamente.")
+        no_display = True
+
+    detector_name = str(opencv_cfg.get("detector", "hog")).lower()
+    if detector_name != "hog":
+        print(f"[WARN] detector OpenCV no soportado: {detector_name}. Usando hog.")
+
+    hog = cv2.HOGDescriptor()
+    hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+
+    max_disappeared = int(opencv_cfg.get("tracker_max_disappeared_frames", 20))
+    max_distance = float(opencv_cfg.get("tracker_max_match_distance_px", 80.0))
+    detect_every = max(1, int(opencv_cfg.get("detect_every_n_frames", 2)))
+
+    src_w = int(settings.get("source_width", 1280))
+    src_h = int(settings.get("source_height", 720))
+
+    per_cam = {}
+    for cam in cameras:
+        cam_id = str(cam["id"])
+        cap, backend_name = _open_capture_with_fallback(cam["uri"])
+        if cap is None:
+            print(f"[WARN] No se pudo abrir {cam.get('name', cam_id)}. Se intentara reconectar en runtime.")
+        else:
+            print(f"[INFO] {cam.get('name', cam_id)} abierto con backend {backend_name}.")
+        per_cam[cam_id] = {
+            "cap": cap,
+            "backend": backend_name,
+            "frame_num": 0,
+            "tracker": SimpleCentroidTracker(max_disappeared=max_disappeared, max_distance=max_distance),
+            "last_detections": [],
+        }
+
+    core = CounterCore(store)
+    mqtt_pub = MQTTPublisher(store)
+    mqtt_pub.start()
+
+    interval_sec = int(settings.get("interval_sec", 60))
+    last_tick = time.monotonic()
+    win_name = "People Counter (OpenCV)"
+
+    cols = int(math.ceil(math.sqrt(len(cameras))))
+
+    try:
+        while True:
+            frames = []
+            for cam in cameras:
+                cam_id = str(cam["id"])
+                st = per_cam[cam_id]
+                cap = st["cap"]
+
+                frame = None
+                if cap is not None:
+                    ok, fr = cap.read()
+                    if ok and fr is not None:
+                        frame = fr
+                    else:
+                        cap.release()
+                        st["cap"] = None
+
+                if st["cap"] is None:
+                    new_cap, backend_name = _open_capture_with_fallback(cam["uri"])
+                    st["cap"] = new_cap
+                    st["backend"] = backend_name
+                    if new_cap is not None:
+                        ok, fr = new_cap.read()
+                        if ok and fr is not None:
+                            frame = fr
+
+                if frame is None:
+                    frame = _blank_frame(src_w, src_h, f"Sin video: {cam.get('name', cam_id)}")
+                    frames.append(frame)
+                    continue
+
+                frame = cv2.resize(frame, (src_w, src_h), interpolation=cv2.INTER_AREA)
+                st["frame_num"] += 1
+                frame_num = int(st["frame_num"])
+
+                if frame_num % detect_every == 0:
+                    detections = _detect_people_hog(frame, hog, opencv_cfg)
+                    st["last_detections"] = detections
+                else:
+                    detections = st["last_detections"]
+
+                tracks = st["tracker"].update(detections)
+                for oid, info in tracks.items():
+                    cx, cy = info["centroid"]
+                    core.process_object(cam, frame_num, int(oid), (float(cx), float(cy)), None)
+                    bbox = info.get("bbox")
+                    if bbox is not None:
+                        x1, y1, x2, y2 = bbox
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), (20, 180, 255), 2)
+                    cv2.putText(
+                        frame,
+                        f"ID:{int(oid)}",
+                        (int(cx) + 4, int(cy) - 4),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.45,
+                        (20, 180, 255),
+                        2,
+                        cv2.LINE_AA,
+                    )
+
+                core.prune_tracks(cam_id, frame_num)
+                _draw_overlay_opencv(frame, cam, core)
+                frames.append(frame)
+
+            if not no_display:
+                tiled = _tile_frames(frames, cols=cols, cell_w=src_w, cell_h=src_h)
+                cv2.imshow(win_name, tiled)
+                key = cv2.waitKey(1) & 0xFF
+                if key in (27, ord("q"), ord("Q")):
+                    raise KeyboardInterrupt
+
+            now = time.monotonic()
+            if now - last_tick >= interval_sec:
+                with store.lock:
+                    payload = core.build_minute_payload()
+                    mqtt_pub.publish_or_queue(payload)
+                    core.reset_minute()
+                    store.data["state"]["last_minute_payload_utc"] = payload["ts_utc"]
+                    store.save()
+                last_tick = now
+
+    except KeyboardInterrupt:
+        print("Deteniendo por teclado...")
+    finally:
+        try:
+            with store.lock:
+                payload = core.build_minute_payload()
+                mqtt_pub.publish_or_queue(payload)
+                core.reset_minute()
+                store.save()
+        except Exception:
+            pass
+
+        for st in per_cam.values():
+            cap = st.get("cap")
+            if cap is not None:
+                cap.release()
+        if not no_display:
+            cv2.destroyAllWindows()
+        mqtt_pub.stop()
+
+
 def run_counter(store: ConfigStore, no_display: bool = False) -> None:
     require_runtime_modules()
 
@@ -988,10 +1404,11 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Contador de personas (DeepStream + MQTT) para Jetson.")
+    parser = argparse.ArgumentParser(description="Contador de personas (DeepStream/OpenCV + MQTT) para Jetson.")
     parser.add_argument("--config", default="config.json", help="Ruta del JSON de configuracion/estado.")
     parser.add_argument("--init", action="store_true", help="Crea plantilla de configuracion y termina.")
     parser.add_argument("--calibrate", action="store_true", help="Modo calibracion de lineas por camara.")
+    parser.add_argument("--backend", choices=["deepstream", "opencv"], default=None, help="Backend de procesamiento (override sobre config).")
     parser.add_argument("--no-display", action="store_true", help="Ejecuta sin mostrar video.")
     args = parser.parse_args()
 
@@ -1020,7 +1437,16 @@ def main():
         calibrate_lines(store)
         return 0
 
-    run_counter(store, no_display=args.no_display)
+    backend = str(args.backend or store.data.get("runtime", {}).get("backend", "deepstream")).lower()
+    if backend not in ("deepstream", "opencv"):
+        print(f"[WARN] backend invalido en config: {backend}. Se usara deepstream.")
+        backend = "deepstream"
+
+    print(f"Backend seleccionado: {backend}")
+    if backend == "opencv":
+        run_counter_opencv(store, no_display=args.no_display)
+    else:
+        run_counter(store, no_display=args.no_display)
     return 0
 
 
