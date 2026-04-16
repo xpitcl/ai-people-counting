@@ -52,45 +52,45 @@
           -3
         ]
       }
-    },
-    {
-      "id": "cam_2",
-      "name": "Camara 2",
-      "uri": "rtsp://admin:polo1010@192.168.1.126:554/Streaming/channels/201",
-      "line": {
-        "p1": [
-          640,
-          100
-        ],
-        "p2": [
-          640,
-          620
-        ],
-        "in_direction": [
-          1,
-          0
-        ]
-      }
-    },
-    {
-      "id": "cam_3",
-      "name": "Camara 3",
-      "uri": "rtsp://admin:polo1010@192.168.1.126:554/Streaming/channels/301",
-      "line": {
-        "p1": [
-          220,
-          130
-        ],
-        "p2": [
-          1000,
-          600
-        ],
-        "in_direction": [
-          0,
-          1
-        ]
-      }
     }
+    // {
+    //   "id": "cam_2",
+    //   "name": "Camara 2",
+    //   "uri": "rtsp://admin:polo1010@192.168.1.126:554/Streaming/channels/201",
+    //   "line": {
+    //     "p1": [
+    //       640,
+    //       100
+    //     ],
+    //     "p2": [
+    //       640,
+    //       620
+    //     ],
+    //     "in_direction": [
+    //       1,
+    //       0
+    //     ]
+    //   }
+    // },
+    // {
+    //   "id": "cam_3",
+    //   "name": "Camara 3",
+    //   "uri": "rtsp://admin:polo1010@192.168.1.126:554/Streaming/channels/301",
+    //   "line": {
+    //     "p1": [
+    //       220,
+    //       130
+    //     ],
+    //     "p2": [
+    //       1000,
+    //       600
+    //     ],
+    //     "in_direction": [
+    //       0,
+    //       1
+    //     ]
+    //   }
+    // }
   ],
   "state": {
     "totals": {
