@@ -1,0 +1,117 @@
+{
+  "settings": {
+    "interval_sec": 60,
+    "person_class_id": 2,
+    "min_crossing_gap_frames": 12,
+    "track_max_idle_frames": 120,
+    "line_deadband_px": 3.0,
+    "source_width": 1280,
+    "source_height": 720,
+    "streammux_batch_timeout_us": 40000,
+    "min_detector_confidence": 0.25,
+    "mqtt": {
+      "host": "YOUR_MQTT_HOST",
+      "port": 1883,
+      "topic": "people_counter/site_a",
+      "client_id": "jetson-orin-nano-counter",
+      "username": "",
+      "password": "",
+      "qos": 1,
+      "retain": false,
+      "keepalive": 30
+    }
+  },
+  "deepstream": {
+    "pgie_config_path": "/opt/nvidia/deepstream/deepstream-7.1/samples/configs/deepstream-app/config_infer_primary.txt",
+    "tracker": {
+      "tracker-width": 640,
+      "tracker-height": 384,
+      "gpu-id": 0,
+      "ll-lib-file": "/opt/nvidia/deepstream/deepstream-7.1/lib/libnvds_nvmultiobjecttracker.so",
+      "ll-config-file": "/opt/nvidia/deepstream/deepstream-7.1/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml",
+      "enable-batch-process": 1,
+      "enable-past-frame": 0
+    }
+  },
+  "cameras": [
+    {
+      "id": "cam_1",
+      "name": "Camara 1",
+      "uri": "rtsp://admin:polo1010@192.168.1.125:554/Streaming/channels/101",
+      "line": {
+        "p1": [
+          636,
+          62
+        ],
+        "p2": [
+          623,
+          629
+        ],
+        "in_direction": [
+          -189,
+          -3
+        ]
+      }
+    },
+    {
+      "id": "cam_2",
+      "name": "Camara 2",
+      "uri": "rtsp://admin:polo1010@192.168.1.126:554/Streaming/channels/201",
+      "line": {
+        "p1": [
+          640,
+          100
+        ],
+        "p2": [
+          640,
+          620
+        ],
+        "in_direction": [
+          1,
+          0
+        ]
+      }
+    },
+    {
+      "id": "cam_3",
+      "name": "Camara 3",
+      "uri": "rtsp://admin:polo1010@192.168.1.126:554/Streaming/channels/301",
+      "line": {
+        "p1": [
+          220,
+          130
+        ],
+        "p2": [
+          1000,
+          600
+        ],
+        "in_direction": [
+          0,
+          1
+        ]
+      }
+    }
+  ],
+  "state": {
+    "totals": {
+      "cam_1": {
+        "in": 0,
+        "out": 0
+      },
+      "cam_2": {
+        "in": 0,
+        "out": 0
+      },
+      "cam_3": {
+        "in": 0,
+        "out": 0
+      },
+      "cam_4": {
+        "in": 0,
+        "out": 0
+      }
+    },
+    "pending_mqtt": [],
+    "last_minute_payload_utc": null
+  }
+}
