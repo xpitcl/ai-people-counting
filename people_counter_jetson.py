@@ -376,22 +376,42 @@ class CounterCore:
         p1 = tuple(cam["line"]["p1"])
         p2 = tuple(cam["line"]["p2"])
         in_vec = normalize_vec(cam["line"]["in_direction"])
+        line_vec = (p2[0] - p1[0], p2[1] - p1[1])
+        line_normal = normalize_vec((-line_vec[1], line_vec[0]))  # left normal of p1->p2
+        in_normal_dot = line_normal[0] * in_vec[0] + line_normal[1] * in_vec[1]
         deadband = float(settings.get("line_deadband_px", 3.0))
         min_gap = int(settings.get("min_crossing_gap_frames", 12))
 
         side = self._line_side(p1, p2, centroid, deadband)
         state = self.track_state[cam_id].setdefault(
-            object_id, {"prev_pt": None, "prev_side": 0, "last_cross_frame": -10_000, "last_seen": frame_num}
+            object_id,
+            {
+                "prev_pt": None,
+                "prev_side": 0,
+                "last_nonzero_side": 0,
+                "last_cross_frame": -10_000,
+                "last_seen": frame_num,
+            },
         )
         prev_pt = state["prev_pt"]
-        prev_side = int(state["prev_side"])
+        prev_nonzero_side = int(state.get("last_nonzero_side", 0))
 
-        if prev_pt is not None and prev_side != 0 and side != 0 and prev_side * side < 0:
+        if prev_pt is not None and prev_nonzero_side != 0 and side != 0 and prev_nonzero_side * side < 0:
             if frame_num - int(state["last_cross_frame"]) >= min_gap:
-                mv = (centroid[0] - prev_pt[0], centroid[1] - prev_pt[1])
-                dot = mv[0] * in_vec[0] + mv[1] * in_vec[1]
-                if abs(dot) > 1e-6:
-                    direction = "in" if dot > 0 else "out"
+                direction = None
+                # Prefer side-transition classification (stable) when in_direction has a
+                # meaningful component orthogonal to the counting line.
+                if abs(in_normal_dot) > 0.2:
+                    in_side = 1 if in_normal_dot > 0 else -1
+                    direction = "in" if side == in_side else "out"
+                else:
+                    # Fallback when in_direction is near-parallel to the line.
+                    mv = (centroid[0] - prev_pt[0], centroid[1] - prev_pt[1])
+                    dot = mv[0] * in_vec[0] + mv[1] * in_vec[1]
+                    if abs(dot) > 1e-6:
+                        direction = "in" if dot > 0 else "out"
+
+                if direction is not None:
                     self.get_totals(cam_id)[direction] += 1
                     self.minute_counts[cam_id][direction] += 1
                     state["last_cross_frame"] = frame_num
@@ -408,6 +428,8 @@ class CounterCore:
 
         state["prev_pt"] = centroid
         state["prev_side"] = side
+        if side != 0:
+            state["last_nonzero_side"] = side
         state["last_seen"] = frame_num
 
     def prune_tracks(self, cam_id: str, frame_num: int) -> None:
