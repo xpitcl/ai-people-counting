@@ -363,6 +363,19 @@ class CounterCore:
                 break
         return attrs
 
+    def _is_person_meta(self, obj_meta, person_class_id: int) -> bool:
+        if obj_meta is None:
+            return False
+        if int(obj_meta.class_id) != int(person_class_id):
+            return False
+
+        # Some models expose class_id only; others also set a text label.
+        label = str(getattr(obj_meta, "obj_label", "") or "").strip().lower()
+        if not label:
+            return True
+
+        return any(token in label for token in ("person", "persona", "pedestrian", "people"))
+
     def process_object(
         self,
         cam: dict,
@@ -1423,7 +1436,7 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> None:
                     except StopIteration:
                         break
 
-                    if int(obj_meta.class_id) == person_class_id and float(obj_meta.confidence) >= min_conf:
+                    if core._is_person_meta(obj_meta, person_class_id) and float(obj_meta.confidence) >= min_conf:
                         oid = int(obj_meta.object_id)
                         if oid >= 0:
                             rect = obj_meta.rect_params
