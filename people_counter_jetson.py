@@ -111,7 +111,9 @@ def default_config() -> dict:
         "runtime": {"backend": "deepstream"},
         "opencv": {
             "detector": "hog",
-            "detect_every_n_frames": 2,
+            "detect_every_n_frames": 4,
+            "detect_resize_width": 640,
+            "detect_resize_height": 360,
             "hog_win_stride": [8, 8],
             "hog_padding": [8, 8],
             "hog_scale": 1.05,
@@ -194,7 +196,9 @@ class ConfigStore:
 
         self.data["runtime"].setdefault("backend", "deepstream")
         self.data["opencv"].setdefault("detector", "hog")
-        self.data["opencv"].setdefault("detect_every_n_frames", 2)
+        self.data["opencv"].setdefault("detect_every_n_frames", 4)
+        self.data["opencv"].setdefault("detect_resize_width", 640)
+        self.data["opencv"].setdefault("detect_resize_height", 360)
         self.data["opencv"].setdefault("hog_win_stride", [8, 8])
         self.data["opencv"].setdefault("hog_padding", [8, 8])
         self.data["opencv"].setdefault("hog_scale", 1.05)
@@ -450,12 +454,21 @@ def require_runtime_modules() -> None:
         raise RuntimeError("Falta dependencia: opencv-python o python3-opencv")
     try:
         import gi  # noqa: F401
-        import pyds  # noqa: F401
+        import pyds as pyds_check  # noqa: F401
     except Exception as e:
         raise RuntimeError(
             "No se pudo importar GStreamer/DeepStream Python bindings (gi + pyds). "
             "Asegura tener DeepStream instalado en Jetson."
         ) from e
+
+    # Verifica API minima esperada por el backend DeepStream.
+    if not hasattr(pyds_check, "gst_buffer_get_nvds_batch_meta"):
+        mod_path = getattr(pyds_check, "__file__", "<desconocido>")
+        raise RuntimeError(
+            "El modulo pyds cargado no es compatible con DeepStream Python API. "
+            f"Modulo cargado: {mod_path}. "
+            "Probablemente se cargo un pyds de pip en vez del binding de DeepStream."
+        )
 
 
 def draw_line_ui(frame, cam_label: str, initial_line: dict) -> Optional[dict]:
@@ -710,6 +723,29 @@ def bus_call(bus, message, loop):
         err, dbg = message.parse_warning()
         print(f"[WARN] {err}: {dbg}")
     return True
+
+
+def _read_pgie_key(config_path: str, key: str) -> Optional[str]:
+    try:
+        cfg = Path(config_path)
+        base = cfg.parent
+        with cfg.open("r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                if k.strip() == key:
+                    val = v.strip().strip('"').strip("'")
+                    if not val:
+                        return None
+                    p = Path(val)
+                    if not p.is_absolute():
+                        p = (base / p).resolve()
+                    return str(p)
+    except Exception:
+        return None
+    return None
 
 
 def _open_capture_with_fallback(uri: str):
@@ -1026,7 +1062,22 @@ def run_counter_opencv(store: ConfigStore, no_display: bool = False) -> None:
                 frame_num = int(st["frame_num"])
 
                 if frame_num % detect_every == 0:
-                    detections = _detect_people_hog(frame, hog, opencv_cfg)
+                    det_w = int(opencv_cfg.get("detect_resize_width", 640))
+                    det_h = int(opencv_cfg.get("detect_resize_height", 360))
+                    use_downscale = det_w > 0 and det_h > 0 and (frame.shape[1] != det_w or frame.shape[0] != det_h)
+
+                    if use_downscale:
+                        det_frame = cv2.resize(frame, (det_w, det_h), interpolation=cv2.INTER_LINEAR)
+                        det_small = _detect_people_hog(det_frame, hog, opencv_cfg)
+                        sx = float(frame.shape[1]) / float(det_w)
+                        sy = float(frame.shape[0]) / float(det_h)
+                        detections = [
+                            (int(x1 * sx), int(y1 * sy), int(x2 * sx), int(y2 * sy), conf)
+                            for (x1, y1, x2, y2, conf) in det_small
+                        ]
+                    else:
+                        detections = _detect_people_hog(frame, hog, opencv_cfg)
+
                     st["last_detections"] = detections
                 else:
                     detections = st["last_detections"]
@@ -1124,6 +1175,14 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> None:
             raise RuntimeError(f"pgie_config_path no existe: {pgie_config_path}")
         print(f"[WARN] pgie_config_path ajustado automaticamente a: {resolved}")
         pgie_config_path = resolved
+
+    engine_path = _read_pgie_key(pgie_config_path, "model-engine-file")
+    if engine_path and not Path(engine_path).exists():
+        print(f"[INFO] TensorRT engine no existe aun: {engine_path}")
+        print("[INFO] Primer arranque: DeepStream puede tardar 1-5+ minutos en construirlo.")
+        engine_dir = str(Path(engine_path).parent)
+        if not os.access(engine_dir, os.W_OK):
+            print(f"[WARN] Sin permisos de escritura en {engine_dir}; el engine podria regenerarse en cada inicio.")
 
     if not no_display and not os.environ.get("DISPLAY"):
         print("[WARN] DISPLAY no definido (entorno headless). Se activa --no-display automaticamente.")
