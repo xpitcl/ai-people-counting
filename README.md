@@ -33,6 +33,7 @@ sudo apt-get install -y python3-opencv python3-gi
 - `settings.mqtt.host`, `port`, credenciales.
 - `settings.mqtt.topic_template`: template por cámara (por defecto `location/{location_id}/device/{device_id}/event/up`).
 - `cameras[].uri` con tus RTSP reales.
+- `cameras[].device_id` (o `deviceID`, `uid`, `ud`, `id`) define el `deviceID` publicado por MQTT.
 - `cameras[].location_id` y `cameras[].line.id` para identificar ubicación y línea.
 - `runtime.backend`: `deepstream` u `opencv`.
 - (Opcional) `deepstream.pgie_config_path` y `deepstream.tracker.*` si usas DeepStream.

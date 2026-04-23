@@ -219,7 +219,8 @@ class ConfigStore:
         self.data["state"].setdefault("last_minute_payload_utc", None)
 
         for idx, cam in enumerate(self.data["cameras"]):
-            cam.setdefault("id", f"cam_{idx+1}")
+            cam_id = cam.get("id") or cam.get("uid") or cam.get("ud") or cam.get("device_id") or cam.get("deviceID")
+            cam["id"] = str(cam_id) if cam_id else f"cam_{idx+1}"
             cam.setdefault("name", cam["id"])
             cam.setdefault("line", {})
             cam.setdefault("location_id", "no_code_location")
@@ -228,9 +229,9 @@ class ConfigStore:
             cam["line"].setdefault("p1", [200, 200])
             cam["line"].setdefault("p2", [1000, 200])
             cam["line"].setdefault("in_direction", [0, -1])
-            cam_id = str(cam["id"])
-            cam["line"].setdefault("id", f"{cam_id}_line_1")
-            self.data["state"]["totals"].setdefault(cam_id, {"in": 0, "out": 0})
+            cam_id_str = str(cam["id"])
+            cam["line"].setdefault("id", f"{cam_id_str}_line_1")
+            self.data["state"]["totals"].setdefault(cam_id_str, {"in": 0, "out": 0})
 
 
 class MQTTPublisher:
@@ -370,6 +371,16 @@ class CounterCore:
             line_id = f"{cam_id}_line_1"
         return str(line_id)
 
+    def _camera_device_id(self, cam: dict) -> str:
+        return str(
+            cam.get("device_id")
+            or cam.get("deviceID")
+            or cam.get("uid")
+            or cam.get("ud")
+            or cam.get("id")
+            or "cam"
+        )
+
     def _camera_location_id(self, cam: dict) -> str:
         return str(
             cam.get("location_id")
@@ -382,7 +393,7 @@ class CounterCore:
         template = str(mqtt_cfg.get("topic_template") or "location/{location_id}/device/{device_id}/event/up").strip()
 
         location_id = self._camera_location_id(cam)
-        device_id = str(cam.get("id", "cam"))
+        device_id = self._camera_device_id(cam)
         topic = template
         topic = topic.replace("{location_id}", location_id)
         topic = topic.replace("{locationID}", location_id)
@@ -524,6 +535,7 @@ class CounterCore:
 
         for cam in self.store.data["cameras"]:
             cam_id = str(cam["id"])
+            device_id = self._camera_device_id(cam)
             line_id = self._camera_line_id(cam)
             location_id = self._camera_location_id(cam)
             totals = self.get_totals(cam_id)
@@ -539,10 +551,10 @@ class CounterCore:
                 "window_start": window_start_iso,
                 "window_end": window_end_iso,
                 "protocol": "Vision",
-                "deviceID": cam_id,
+                "deviceID": device_id,
                 "locationID": location_id,
                 "device_info": {
-                    "friendly_name": cam.get("name", cam_id),
+                    "friendly_name": cam.get("name", device_id),
                     "manufacturer_name": cam.get("manufacturer_name", "NVIDIA"),
                     "device_model": cam.get("device_model", "Jetson Orin Nano"),
                     "device_type": cam.get("device_type", "CameraEdge"),
