@@ -555,11 +555,6 @@ class CounterCore:
                     "people_in_total": int(totals["in"]),
                     "people_out_total": int(totals["out"]),
                     "people_occupancy": occupancy,
-                    "count_in": int(minute["in"]),
-                    "count_out": int(minute["out"]),
-                    "inside": occupancy,
-                    "total_in": int(totals["in"]),
-                    "total_out": int(totals["out"]),
                     "interval_sec": interval_sec,
                 },
             }
@@ -870,13 +865,69 @@ def _read_pgie_key(config_path: str, key: str) -> Optional[str]:
                     val = v.strip().strip('"').strip("'")
                     if not val:
                         return None
-                    p = Path(val)
+                    p = Path(val).expanduser()
                     if not p.is_absolute():
                         p = (base / p).resolve()
                     return str(p)
     except Exception:
         return None
     return None
+
+
+def _write_pgie_runtime_config(source_config: str, target_config: str, overrides: Dict[str, str]) -> None:
+    src = Path(source_config)
+    dst = Path(target_config)
+    lines = src.read_text(encoding="utf-8").splitlines()
+    seen = set()
+    out_lines: List[str] = []
+    for raw in lines:
+        line = raw.rstrip("\n")
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            out_lines.append(line)
+            continue
+        k, _ = line.split("=", 1)
+        key = k.strip()
+        if key in overrides:
+            out_lines.append(f"{key}={overrides[key]}")
+            seen.add(key)
+        else:
+            out_lines.append(line)
+    for key, value in overrides.items():
+        if key not in seen:
+            out_lines.append(f"{key}={value}")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
+
+
+def _prepare_runtime_pgie_config(config_path: str) -> Tuple[str, Optional[str]]:
+    engine_path = _read_pgie_key(config_path, "model-engine-file")
+    if not engine_path:
+        return (config_path, None)
+
+    engine_file = Path(engine_path).expanduser()
+    try:
+        engine_file.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+    if os.access(str(engine_file.parent), os.W_OK):
+        return (config_path, str(engine_file))
+
+    fallback_dir = Path.home() / ".cache" / "ai-people-counting" / "engines"
+    fallback_cfg_dir = Path.home() / ".cache" / "ai-people-counting" / "configs"
+    fallback_dir.mkdir(parents=True, exist_ok=True)
+    fallback_cfg_dir.mkdir(parents=True, exist_ok=True)
+    fallback_engine = fallback_dir / (engine_file.name or "primary_detector.engine")
+    runtime_cfg = fallback_cfg_dir / f"{Path(config_path).stem}.runtime.txt"
+    _write_pgie_runtime_config(
+        source_config=config_path,
+        target_config=str(runtime_cfg),
+        overrides={"model-engine-file": str(fallback_engine)},
+    )
+    print(f"[WARN] model-engine-file no escribible: {engine_file.parent}")
+    print(f"[WARN] Se usara cache de engine en: {fallback_engine}")
+    return (str(runtime_cfg), str(fallback_engine))
 
 
 def _open_capture_with_fallback(uri: str):
@@ -1312,7 +1363,11 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> None:
         print(f"[WARN] pgie_config_path ajustado automaticamente a: {resolved}")
         pgie_config_path = resolved
 
-    engine_path = _read_pgie_key(pgie_config_path, "model-engine-file")
+    base_pgie_config_path = str(pgie_config_path)
+    pgie_config_path, engine_path = _prepare_runtime_pgie_config(base_pgie_config_path)
+    if Path(base_pgie_config_path).resolve() != Path(pgie_config_path).resolve():
+        print(f"[INFO] Usando config PGIE runtime: {pgie_config_path}")
+
     if engine_path and not Path(engine_path).exists():
         print(f"[INFO] TensorRT engine no existe aun: {engine_path}")
         print("[INFO] Primer arranque: DeepStream puede tardar 1-5+ minutos en construirlo.")
@@ -1581,7 +1636,7 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> None:
 
     print(f"Iniciando pipeline con {len(cameras)} camaras...")
     mqtt_cfg = store.data.get("settings", {}).get("mqtt", {})
-    active_topic = mqtt_cfg.get("topic_template") or "location/{location_id}/device/{device_id}/event/up"
+    active_topic = mqtt_cfg.get("topic_template") or mqtt_cfg.get("topic")
     print(f"Envio MQTT cada {interval_sec}s a topic/template: {active_topic}")
     pipeline.set_state(Gst.State.PLAYING)
 

@@ -120,11 +120,6 @@ Payload ejemplo:
     "people_in_total": 24,
     "people_out_total": 17,
     "people_occupancy": 7,
-    "count_in": 2,
-    "count_out": 1,
-    "inside": 7,
-    "total_in": 24,
-    "total_out": 17,
     "interval_sec": 2
   }
 }
@@ -138,7 +133,7 @@ Si el broker está caído:
 
 ## Notas operativas
 
-- `Inside` se calcula como `In - Out`.
+- `people_occupancy` se calcula como `people_in_total - people_out_total`.
 - Si reinicias el script, conserva estado acumulado y cola MQTT en el JSON.
 - Para 4+ cámaras, ajusta resolución y `streammux_batch_timeout_us` según rendimiento.
 

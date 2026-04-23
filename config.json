@@ -35,7 +35,7 @@
   },
   "cameras": [
     {
-      "id": "cam_1",
+      "id": "6d8de9f533846bb719e7b3ca",
       "name": "Camara 1",
       "location_id": "ec9e00c6c2ea45a7cdf7",
       "uri": "rtsp://admin:polo1010@192.168.1.125:554/Streaming/channels/101",
