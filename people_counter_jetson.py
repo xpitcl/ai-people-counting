@@ -310,6 +310,7 @@ class MQTTPublisher:
                 info.wait_for_publish(timeout=2.0)
             except Exception:
                 return False
+            print(f"[MQTT][SENT] topic={topic} msg={body}")
         return ok
 
     def enqueue_pending(self, message: dict) -> None:
