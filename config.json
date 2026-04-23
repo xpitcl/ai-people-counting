@@ -10,12 +10,12 @@
     "streammux_batch_timeout_us": 40000,
     "min_detector_confidence": 0.25,
     "mqtt": {
-      "host": "YOUR_MQTT_HOST",
+      "host": "horus.xpit.cl",
       "port": 1883,
-      "topic": "people_counter/site_a",
-      "client_id": "jetson-orin-nano-counter",
-      "username": "",
-      "password": "",
+      "topic_template": "location/{location_id}/device/{device_id}/event/up",
+      "client_id": "ec9e00c6c2ea45a7cdf7",
+      "username": "xpitcentral",
+      "password": "nX2?Oc1DXQxY?1MLIVw[",
       "qos": 1,
       "retain": false,
       "keepalive": 30
@@ -37,8 +37,10 @@
     {
       "id": "cam_1",
       "name": "Camara 1",
+      "location_id": "ec9e00c6c2ea45a7cdf7",
       "uri": "rtsp://admin:polo1010@192.168.1.125:554/Streaming/channels/101",
       "line": {
+        "id": "cam_1_line_1",
         "p1": [
           636,
           62

@@ -1,6 +1,6 @@
 # People Counter Jetson (DeepStream u OpenCV + MQTT)
 
-Script para Jetson Orin Nano que cuenta personas por cruce de línea en múltiples cámaras RTSP y publica métricas por MQTT cada 60 segundos.
+Script para Jetson Orin Nano que cuenta personas por cruce de línea en múltiples cámaras RTSP y publica métricas por MQTT cada `interval_sec` (ej: 1, 2 o 60 segundos).
 
 Archivo principal:
 - `people_counter_jetson.py`
@@ -30,8 +30,10 @@ sudo apt-get install -y python3-opencv python3-gi
 ## Configuración rápida
 
 1. Edita `config.json`:
-- `settings.mqtt.host`, `port`, `topic`, credenciales.
+- `settings.mqtt.host`, `port`, credenciales.
+- `settings.mqtt.topic_template`: template por cámara (por defecto `location/{location_id}/device/{device_id}/event/up`).
 - `cameras[].uri` con tus RTSP reales.
+- `cameras[].location_id` y `cameras[].line.id` para identificar ubicación y línea.
 - `runtime.backend`: `deepstream` u `opencv`.
 - (Opcional) `deepstream.pgie_config_path` y `deepstream.tracker.*` si usas DeepStream.
 - (Opcional) `opencv.*` para ajustar detector/tracker en backend OpenCV.
@@ -85,10 +87,50 @@ Nota: el script solo fuerza `--no-display` si no detecta `DISPLAY` (entorno head
 
 ## Qué publica por MQTT
 
-Cada `interval_sec` (por defecto 60s) publica:
-- `in`, `out`, `inside` por cámara.
-- totales acumulados (`total_in`, `total_out`).
-- lista de eventos de cruce del minuto.
+Cada `interval_sec` publica **un mensaje por cámara** con formato IoT:
+
+Topic (por cámara):
+```text
+location/{location_id}/device/{device_id}/event/up
+```
+
+Payload ejemplo:
+```json
+{
+  "schema_version": 1,
+  "message_type": "metric",
+  "msg_id": "e5b9b11d-3c5a-4ac8-93a9-4e4f6ab2f7e2",
+  "time": "2026-04-23T15:10:00Z",
+  "window_start": "2026-04-23T15:09:58Z",
+  "window_end": "2026-04-23T15:10:00Z",
+  "protocol": "Vision",
+  "deviceID": "cam_1",
+  "locationID": "site_a",
+  "device_info": {
+    "friendly_name": "Camara 1",
+    "manufacturer_name": "NVIDIA",
+    "device_model": "Jetson Orin Nano",
+    "device_type": "CameraEdge",
+    "host": "jetson-orin-nano"
+  },
+  "object": {
+    "line_id": "cam_1_line_1",
+    "people_in_interval": 2,
+    "people_out_interval": 1,
+    "people_in_total": 24,
+    "people_out_total": 17,
+    "people_occupancy": 7,
+    "count_in": 2,
+    "count_out": 1,
+    "inside": 7,
+    "total_in": 24,
+    "total_out": 17,
+    "interval_sec": 2
+  }
+}
+```
+
+`line_id` es el campo estático por línea (hoy una línea por cámara), preparado para múltiples líneas futuras.
 
 Si el broker está caído:
 - guarda payloads pendientes en `state.pending_mqtt` dentro de `config.json`.

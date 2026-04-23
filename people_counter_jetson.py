@@ -27,7 +27,6 @@ Usage:
 """
 
 import argparse
-import copy
 import datetime as dt
 import json
 import math
@@ -37,6 +36,7 @@ import socket
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -99,7 +99,7 @@ def default_config() -> dict:
             "mqtt": {
                 "host": "YOUR_MQTT_HOST",
                 "port": 1883,
-                "topic": "people_counter/site_a",
+                "topic_template": "location/{location_id}/device/{device_id}/event/up",
                 "client_id": "jetson-orin-nano-counter",
                 "username": "",
                 "password": "",
@@ -138,26 +138,30 @@ def default_config() -> dict:
             {
                 "id": "cam_1",
                 "name": "Camara 1",
+                "location_id": "no_code_location",
                 "uri": "rtsp://USER:PASS@IP:554/stream1",
-                "line": {"p1": [200, 360], "p2": [1080, 360], "in_direction": [0, -1]},
+                "line": {"id": "cam_1_line_1", "p1": [200, 360], "p2": [1080, 360], "in_direction": [0, -1]},
             },
             {
                 "id": "cam_2",
                 "name": "Camara 2",
+                "location_id": "no_code_location",
                 "uri": "rtsp://USER:PASS@IP:554/stream1",
-                "line": {"p1": [640, 100], "p2": [640, 620], "in_direction": [1, 0]},
+                "line": {"id": "cam_2_line_1", "p1": [640, 100], "p2": [640, 620], "in_direction": [1, 0]},
             },
             {
                 "id": "cam_3",
                 "name": "Camara 3",
+                "location_id": "no_code_location",
                 "uri": "rtsp://USER:PASS@IP:554/stream1",
-                "line": {"p1": [220, 130], "p2": [1000, 600], "in_direction": [0, 1]},
+                "line": {"id": "cam_3_line_1", "p1": [220, 130], "p2": [1000, 600], "in_direction": [0, 1]},
             },
             {
                 "id": "cam_4",
                 "name": "Camara 4",
+                "location_id": "no_code_location",
                 "uri": "rtsp://USER:PASS@IP:554/stream1",
-                "line": {"p1": [300, 100], "p2": [300, 700], "in_direction": [-1, 0]},
+                "line": {"id": "cam_4_line_1", "p1": [300, 100], "p2": [300, 700], "in_direction": [-1, 0]},
             },
         ],
         "state": {"totals": {}, "pending_mqtt": [], "last_minute_payload_utc": None},
@@ -193,6 +197,7 @@ class ConfigStore:
         self.data.setdefault("deepstream", {})
         self.data.setdefault("cameras", [])
         self.data.setdefault("state", {})
+        self.data["settings"].setdefault("mqtt", {})
 
         self.data["runtime"].setdefault("backend", "deepstream")
         self.data["opencv"].setdefault("detector", "hog")
@@ -206,6 +211,8 @@ class ConfigStore:
         self.data["opencv"].setdefault("hog_min_confidence", 0.0)
         self.data["opencv"].setdefault("tracker_max_disappeared_frames", 20)
         self.data["opencv"].setdefault("tracker_max_match_distance_px", 80.0)
+        self.data["settings"]["mqtt"].pop("topic", None)
+        self.data["settings"]["mqtt"].setdefault("topic_template", "location/{location_id}/device/{device_id}/event/up")
 
         self.data["state"].setdefault("totals", {})
         self.data["state"].setdefault("pending_mqtt", [])
@@ -215,10 +222,14 @@ class ConfigStore:
             cam.setdefault("id", f"cam_{idx+1}")
             cam.setdefault("name", cam["id"])
             cam.setdefault("line", {})
+            cam.setdefault("location_id", "no_code_location")
+            if "line_id" in cam["line"] and "id" not in cam["line"]:
+                cam["line"]["id"] = cam["line"]["line_id"]
             cam["line"].setdefault("p1", [200, 200])
             cam["line"].setdefault("p2", [1000, 200])
             cam["line"].setdefault("in_direction", [0, -1])
             cam_id = str(cam["id"])
+            cam["line"].setdefault("id", f"{cam_id}_line_1")
             self.data["state"]["totals"].setdefault(cam_id, {"in": 0, "out": 0})
 
 
@@ -265,12 +276,30 @@ class MQTTPublisher:
         with self.lock:
             self.connected = False
 
-    def _publish(self, payload: dict) -> bool:
+    def _normalize_message(self, message: dict) -> dict:
         cfg = self.store.data["settings"]["mqtt"]
-        topic = cfg["topic"]
+        topic_template = str(cfg.get("topic_template") or "location/{location_id}/device/{device_id}/event/up").strip()
+        default_topic = topic_template
+        default_topic = default_topic.replace("{location_id}", "no_code_location")
+        default_topic = default_topic.replace("{locationID}", "no_code_location")
+        default_topic = default_topic.replace("{device_id}", "unknown_device")
+        default_topic = default_topic.replace("{deviceID}", "unknown_device")
+        default_topic = default_topic.replace("{camera_id}", "unknown_device")
+        if isinstance(message, dict) and "payload" in message:
+            payload = message.get("payload", {})
+            topic = message.get("topic", default_topic)
+        else:
+            payload = message
+            topic = default_topic
+        return {"topic": str(topic), "payload": payload}
+
+    def _publish(self, message: dict) -> bool:
+        cfg = self.store.data["settings"]["mqtt"]
         qos = int(cfg.get("qos", 1))
         retain = bool(cfg.get("retain", False))
-        body = json.dumps(payload, ensure_ascii=True)
+        normalized = self._normalize_message(message)
+        topic = normalized["topic"]
+        body = json.dumps(normalized["payload"], ensure_ascii=True)
         with self.lock:
             if not self.connected or self.client is None:
                 return False
@@ -283,9 +312,10 @@ class MQTTPublisher:
                 return False
         return ok
 
-    def enqueue_pending(self, payload: dict) -> None:
+    def enqueue_pending(self, message: dict) -> None:
+        normalized = self._normalize_message(message)
         with self.store.lock:
-            self.store.data["state"]["pending_mqtt"].append(payload)
+            self.store.data["state"]["pending_mqtt"].append(normalized)
             self.store.save()
 
     def flush_pending(self) -> None:
@@ -294,16 +324,18 @@ class MQTTPublisher:
             if not pending:
                 return
             remaining = []
-            for payload in pending:
-                if not self._publish(payload):
-                    remaining.append(payload)
+            for message in pending:
+                normalized = self._normalize_message(message)
+                if not self._publish(normalized):
+                    remaining.append(normalized)
             self.store.data["state"]["pending_mqtt"] = remaining
             self.store.save()
 
-    def publish_or_queue(self, payload: dict) -> None:
+    def publish_or_queue(self, message: dict) -> None:
         self.flush_pending()
-        if not self._publish(payload):
-            self.enqueue_pending(payload)
+        normalized = self._normalize_message(message)
+        if not self._publish(normalized):
+            self.enqueue_pending(normalized)
 
 
 class CounterCore:
@@ -328,6 +360,35 @@ class CounterCore:
     def inside(self, cam_id: str) -> int:
         t = self.get_totals(cam_id)
         return int(t["in"]) - int(t["out"])
+
+    def _camera_line_id(self, cam: dict) -> str:
+        cam_id = str(cam.get("id", "cam"))
+        line_cfg = cam.get("line", {}) or {}
+        line_id = line_cfg.get("id") or line_cfg.get("line_id")
+        if not line_id:
+            line_id = f"{cam_id}_line_1"
+        return str(line_id)
+
+    def _camera_location_id(self, cam: dict) -> str:
+        return str(
+            cam.get("location_id")
+            or cam.get("locationID")
+            or "no_code_location"
+        )
+
+    def _topic_for_camera(self, cam: dict) -> str:
+        mqtt_cfg = self.store.data["settings"].get("mqtt", {})
+        template = str(mqtt_cfg.get("topic_template") or "location/{location_id}/device/{device_id}/event/up").strip()
+
+        location_id = self._camera_location_id(cam)
+        device_id = str(cam.get("id", "cam"))
+        topic = template
+        topic = topic.replace("{location_id}", location_id)
+        topic = topic.replace("{locationID}", location_id)
+        topic = topic.replace("{device_id}", device_id)
+        topic = topic.replace("{deviceID}", device_id)
+        topic = topic.replace("{camera_id}", device_id)
+        return topic
 
     def _line_side(self, p1, p2, pt, deadband_px: float) -> int:
         x1, y1 = p1
@@ -433,6 +494,7 @@ class CounterCore:
                             "ts_utc": utc_now_iso(),
                             "camera_id": cam_id,
                             "camera_name": cam.get("name", cam_id),
+                            "line_id": self._camera_line_id(cam),
                             "track_id": int(object_id),
                             "direction": direction,
                             "attrs": self._extract_attrs(obj_meta),
@@ -452,30 +514,57 @@ class CounterCore:
         for tid in stale:
             del tmap[tid]
 
-    def build_minute_payload(self) -> dict:
-        payload = {
-            "ts_utc": utc_now_iso(),
-            "device": self.hostname,
-            "interval_sec": int(self.store.data["settings"].get("interval_sec", 60)),
-            "cameras": [],
-            "events": copy.deepcopy(self.minute_events),
-        }
+    def build_interval_messages(self) -> List[dict]:
+        interval_sec = int(self.store.data["settings"].get("interval_sec", 60))
+        now_dt = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+        window_end_iso = now_dt.isoformat().replace("+00:00", "Z")
+        window_start_iso = (now_dt - dt.timedelta(seconds=interval_sec)).isoformat().replace("+00:00", "Z")
+        messages: List[dict] = []
+
         for cam in self.store.data["cameras"]:
             cam_id = str(cam["id"])
+            line_id = self._camera_line_id(cam)
+            location_id = self._camera_location_id(cam)
             totals = self.get_totals(cam_id)
             minute = self.minute_counts[cam_id]
-            payload["cameras"].append(
-                {
-                    "id": cam_id,
-                    "name": cam.get("name", cam_id),
-                    "in": int(minute["in"]),
-                    "out": int(minute["out"]),
-                    "inside": int(totals["in"]) - int(totals["out"]),
+            occupancy = int(totals["in"]) - int(totals["out"])
+            topic = self._topic_for_camera(cam)
+
+            payload = {
+                "schema_version": 1,
+                "message_type": "metric",
+                "msg_id": str(uuid.uuid4()),
+                "time": window_end_iso,
+                "window_start": window_start_iso,
+                "window_end": window_end_iso,
+                "protocol": "Vision",
+                "deviceID": cam_id,
+                "locationID": location_id,
+                "device_info": {
+                    "friendly_name": cam.get("name", cam_id),
+                    "manufacturer_name": cam.get("manufacturer_name", "NVIDIA"),
+                    "device_model": cam.get("device_model", "Jetson Orin Nano"),
+                    "device_type": cam.get("device_type", "CameraEdge"),
+                    "host": self.hostname,
+                },
+                "object": {
+                    "line_id": line_id,
+                    "people_in_interval": int(minute["in"]),
+                    "people_out_interval": int(minute["out"]),
+                    "people_in_total": int(totals["in"]),
+                    "people_out_total": int(totals["out"]),
+                    "people_occupancy": occupancy,
+                    "count_in": int(minute["in"]),
+                    "count_out": int(minute["out"]),
+                    "inside": occupancy,
                     "total_in": int(totals["in"]),
                     "total_out": int(totals["out"]),
-                }
-            )
-        return payload
+                    "interval_sec": interval_sec,
+                },
+            }
+            messages.append({"topic": topic, "payload": payload})
+
+        return messages
 
     def reset_minute(self) -> None:
         for v in self.minute_counts.values():
@@ -511,6 +600,7 @@ def draw_line_ui(frame, cam_label: str, initial_line: dict) -> Optional[dict]:
     if initial_line and "p1" in initial_line and "p2" in initial_line:
         points = [tuple(initial_line["p1"]), tuple(initial_line["p2"])]
     in_dir = tuple(initial_line.get("in_direction", [0, -1])) if initial_line else (0, -1)
+    line_id = str(initial_line.get("id") or initial_line.get("line_id") or "line_1") if initial_line else "line_1"
     line_done = False
     win_name = f"Calibracion - {cam_label}"
 
@@ -588,7 +678,12 @@ def draw_line_ui(frame, cam_label: str, initial_line: dict) -> Optional[dict]:
         elif key in (13, 10):  # Enter
             if line_done:
                 cv2.destroyWindow(win_name)
-                return {"p1": [points[0][0], points[0][1]], "p2": [points[1][0], points[1][1]], "in_direction": [in_dir[0], in_dir[1]]}
+                return {
+                    "id": line_id,
+                    "p1": [points[0][0], points[0][1]],
+                    "p2": [points[1][0], points[1][1]],
+                    "in_direction": [in_dir[0], in_dir[1]],
+                }
 
 
 def calibrate_lines(store: ConfigStore) -> None:
@@ -1150,10 +1245,12 @@ def run_counter_opencv(store: ConfigStore, no_display: bool = False) -> None:
             now = time.monotonic()
             if now - last_tick >= interval_sec:
                 with store.lock:
-                    payload = core.build_minute_payload()
-                    mqtt_pub.publish_or_queue(payload)
+                    messages = core.build_interval_messages()
+                    for message in messages:
+                        mqtt_pub.publish_or_queue(message)
                     core.reset_minute()
-                    store.data["state"]["last_minute_payload_utc"] = payload["ts_utc"]
+                    if messages:
+                        store.data["state"]["last_minute_payload_utc"] = messages[0]["payload"]["time"]
                     store.save()
                 last_tick = now
 
@@ -1162,9 +1259,12 @@ def run_counter_opencv(store: ConfigStore, no_display: bool = False) -> None:
     finally:
         try:
             with store.lock:
-                payload = core.build_minute_payload()
-                mqtt_pub.publish_or_queue(payload)
+                messages = core.build_interval_messages()
+                for message in messages:
+                    mqtt_pub.publish_or_queue(message)
                 core.reset_minute()
+                if messages:
+                    store.data["state"]["last_minute_payload_utc"] = messages[0]["payload"]["time"]
                 store.save()
         except Exception:
             pass
@@ -1467,17 +1567,21 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> None:
 
     def minute_tick():
         with store.lock:
-            payload = core.build_minute_payload()
-            mqtt_pub.publish_or_queue(payload)
+            messages = core.build_interval_messages()
+            for message in messages:
+                mqtt_pub.publish_or_queue(message)
             core.reset_minute()
-            store.data["state"]["last_minute_payload_utc"] = payload["ts_utc"]
+            if messages:
+                store.data["state"]["last_minute_payload_utc"] = messages[0]["payload"]["time"]
             store.save()
         return True
 
     GLib.timeout_add_seconds(interval_sec, minute_tick)
 
     print(f"Iniciando pipeline con {len(cameras)} camaras...")
-    print(f"Envio MQTT cada {interval_sec}s a topic: {store.data['settings']['mqtt']['topic']}")
+    mqtt_cfg = store.data.get("settings", {}).get("mqtt", {})
+    active_topic = mqtt_cfg.get("topic_template") or "location/{location_id}/device/{device_id}/event/up"
+    print(f"Envio MQTT cada {interval_sec}s a topic/template: {active_topic}")
     pipeline.set_state(Gst.State.PLAYING)
 
     try:
@@ -1487,9 +1591,12 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> None:
     finally:
         try:
             with store.lock:
-                payload = core.build_minute_payload()
-                mqtt_pub.publish_or_queue(payload)
+                messages = core.build_interval_messages()
+                for message in messages:
+                    mqtt_pub.publish_or_queue(message)
                 core.reset_minute()
+                if messages:
+                    store.data["state"]["last_minute_payload_utc"] = messages[0]["payload"]["time"]
                 store.save()
         except Exception:
             pass
