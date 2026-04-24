@@ -151,3 +151,41 @@ Usar otro archivo de configuración:
 ```bash
 python3 people_counter_jetson.py --config /ruta/mi_config.json
 ```
+
+Ejecutar como servicio `systemd` (arranque automático):
+
+```bash
+sudo tee /etc/systemd/system/people-counter.service > /dev/null <<'EOF'
+[Unit]
+Description=People Counter (Jetson DeepStream)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=xpit
+Group=xpit
+WorkingDirectory=/home/xpit/Desktop/ai-people-counting
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /home/xpit/Desktop/ai-people-counting/people_counter_jetson.py --config /home/xpit/Desktop/ai-people-counting/config.json --no-display --backend deepstream
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+Comandos útiles del servicio:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now people-counter.service
+sudo systemctl status people-counter.service --no-pager
+sudo journalctl -u people-counter.service -f
+sudo systemctl restart people-counter.service
+sudo systemctl stop people-counter.service
+sudo systemctl disable people-counter.service
+```
+
+Recomendación: ejecuta el servicio siempre con el mismo usuario (`User=xpit`) para reutilizar el caché de TensorRT y evitar recompilar engines.
