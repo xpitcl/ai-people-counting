@@ -1,0 +1,46 @@
+FROM nvcr.io/nvidia/deepstream:7.1-samples-multiarch
+
+ENV PYTHONUNBUFFERED=1 \
+    APP_DIR=/app \
+    CONFIG_PATH=/data/config.json \
+    CACHE_ROOT=/root/.cache/ai-people-counting
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-pip \
+        python3-gi \
+        python3-opencv \
+        gir1.2-gst-rtsp-server-1.0 \
+        gstreamer1.0-tools \
+        gstreamer1.0-rtsp \
+        gstreamer1.0-plugins-base \
+        gstreamer1.0-plugins-good \
+        gstreamer1.0-plugins-bad \
+        gstreamer1.0-plugins-ugly \
+        curl \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN python3 -m pip install --no-cache-dir -r requirements.txt \
+    || python3 -m pip install --break-system-packages --no-cache-dir -r requirements.txt
+
+COPY . .
+
+RUN chmod +x scripts/setup_peoplenet.sh scripts/docker-entrypoint.sh \
+    && mkdir -p /data "${CACHE_ROOT}/models/peoplenet" "${CACHE_ROOT}/engines"
+
+RUN gst-inspect-1.0 rtspclientsink >/dev/null \
+    && gst-inspect-1.0 h264parse >/dev/null \
+    && gst-inspect-1.0 rtph264pay >/dev/null \
+    && gst-inspect-1.0 rtph264depay >/dev/null \
+    && gst-inspect-1.0 udpsink >/dev/null \
+    && gst-inspect-1.0 x264enc >/dev/null
+
+VOLUME ["/data", "/root/.cache/ai-people-counting"]
+
+ENTRYPOINT ["scripts/docker-entrypoint.sh"]
+CMD []

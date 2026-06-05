@@ -37,6 +37,7 @@ import socket
 import sys
 import threading
 import time
+import urllib.parse
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -57,6 +58,8 @@ except Exception:
     np = None
 
 pyds = None
+
+DEFAULT_PEOPLENET_PGIE_CONFIG = "configs/deepstream/config_infer_primary_peoplenet.txt"
 
 
 def utc_now_iso() -> str:
@@ -85,11 +88,15 @@ def first_existing_path(candidates: List[str]) -> Optional[str]:
     return None
 
 
+def repo_path(relative_path: str) -> str:
+    return str((Path(__file__).resolve().parent / relative_path).resolve())
+
+
 def default_config() -> dict:
     return {
         "settings": {
             "interval_sec": 60,
-            "person_class_id": 2,
+            "person_class_id": 0,
             "min_crossing_gap_frames": 12,
             "track_max_idle_frames": 120,
             "line_deadband_px": 3.0,
@@ -124,7 +131,15 @@ def default_config() -> dict:
             "tracker_max_match_distance_px": 80.0,
         },
         "deepstream": {
-            "pgie_config_path": "/opt/nvidia/deepstream/deepstream-7.1/samples/configs/deepstream-app/config_infer_primary.txt",
+            "pgie_config_path": DEFAULT_PEOPLENET_PGIE_CONFIG,
+            "processed_rtsp": {
+                "enabled": False,
+                "url": "rtsp://127.0.0.1:18554/people-counter",
+                "width": 640,
+                "height": 360,
+                "fps": 5,
+                "bitrate": 1_000_000,
+            },
             "tracker": {
                 "tracker-width": 640,
                 "tracker-height": 384,
@@ -201,6 +216,30 @@ class ConfigStore:
         self.data["settings"].setdefault("mqtt", {})
 
         self.data["runtime"].setdefault("backend", "deepstream")
+        self.data["settings"].setdefault("person_class_id", 0)
+        self.data["settings"].setdefault("min_detector_confidence", 0.25)
+        self.data["deepstream"].setdefault("pgie_config_path", DEFAULT_PEOPLENET_PGIE_CONFIG)
+        self.data["deepstream"].setdefault("processed_rtsp", {})
+        self.data["deepstream"]["processed_rtsp"].setdefault("enabled", False)
+        self.data["deepstream"]["processed_rtsp"].setdefault("url", "rtsp://127.0.0.1:18554/people-counter")
+        self.data["deepstream"]["processed_rtsp"].setdefault("width", 640)
+        self.data["deepstream"]["processed_rtsp"].setdefault("height", 360)
+        self.data["deepstream"]["processed_rtsp"].setdefault("fps", 5)
+        self.data["deepstream"]["processed_rtsp"].setdefault("bitrate", 1_000_000)
+        self.data["deepstream"].setdefault("tracker", {})
+        self.data["deepstream"]["tracker"].setdefault("tracker-width", 640)
+        self.data["deepstream"]["tracker"].setdefault("tracker-height", 384)
+        self.data["deepstream"]["tracker"].setdefault("gpu-id", 0)
+        self.data["deepstream"]["tracker"].setdefault(
+            "ll-lib-file",
+            "/opt/nvidia/deepstream/deepstream-7.1/lib/libnvds_nvmultiobjecttracker.so",
+        )
+        self.data["deepstream"]["tracker"].setdefault(
+            "ll-config-file",
+            "/opt/nvidia/deepstream/deepstream-7.1/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml",
+        )
+        self.data["deepstream"]["tracker"].setdefault("enable-batch-process", 1)
+        self.data["deepstream"]["tracker"].setdefault("enable-past-frame", 0)
         self.data["opencv"].setdefault("detector", "hog")
         self.data["opencv"].setdefault("detect_every_n_frames", 4)
         self.data["opencv"].setdefault("detect_resize_width", 640)
@@ -796,6 +835,27 @@ def _link_elements_or_raise(*elements) -> None:
             raise RuntimeError(f"Error linkeando: {a.name} -> {b.name}")
 
 
+def _link_tee_to_queue_or_raise(tee, queue, branch_name: str) -> None:
+    if hasattr(tee, "request_pad_simple"):
+        srcpad = tee.request_pad_simple("src_%u")
+    else:
+        srcpad = tee.get_request_pad("src_%u")
+    sinkpad = queue.get_static_pad("sink")
+    if srcpad is None or sinkpad is None or srcpad.link(sinkpad) != 0:
+        raise RuntimeError(f"Error linkeando tee -> {branch_name}")
+
+
+def _parse_rtsp_output_url(url: str) -> Tuple[str, str]:
+    parsed = urllib.parse.urlparse(url or "")
+    if parsed.scheme and parsed.scheme != "rtsp":
+        raise RuntimeError(f"processed_rtsp.url debe usar rtsp://, recibido: {url}")
+    port = parsed.port or 8554
+    path = parsed.path or "/people-counter"
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return (str(port), path)
+
+
 def create_source_bin(index, uri):
     import gi
 
@@ -952,6 +1012,15 @@ def _infer_generated_engine_path(config_path: str, model_path: str, batch_size: 
     return f"{model_path}_b{batch_size}_gpu{gpu_id}_{precision}.engine"
 
 
+def _engine_path_for_batch(engine_path: Path, batch_size: int) -> Path:
+    name = engine_path.name
+    before_gpu, gpu_sep, after_gpu = name.partition("_gpu")
+    prefix, batch_sep, _ = before_gpu.rpartition("_b")
+    if not gpu_sep or not batch_sep or not prefix:
+        return engine_path
+    return engine_path.with_name(f"{prefix}_b{batch_size}{gpu_sep}{after_gpu}")
+
+
 def _add_absolute_pgie_file_overrides(config_path: str, overrides: Dict[str, str]) -> None:
     relative_file_keys = (
         "labelfile-path",
@@ -960,14 +1029,23 @@ def _add_absolute_pgie_file_overrides(config_path: str, overrides: Dict[str, str
         "mean-file",
         "proto-file",
         "custom-lib-path",
+        "onnx-file",
+        "tlt-encoded-model",
+        "uff-file",
+        "model-file",
+        "model-engine-file",
     )
     for key in relative_file_keys:
         raw_value = _read_pgie_raw_key(config_path, key)
-        if not raw_value or Path(raw_value).expanduser().is_absolute():
+        if not raw_value:
             continue
         resolved = _read_pgie_key(config_path, key)
-        if resolved and Path(resolved).exists():
-            overrides.setdefault(key, resolved)
+        if not resolved:
+            continue
+        raw_path = Path(raw_value).expanduser()
+        if raw_path.is_absolute() and str(raw_path) == raw_value:
+            continue
+        overrides.setdefault(key, resolved)
 
 
 def _prepare_runtime_pgie_config(config_path: str, batch_size: int) -> Tuple[str, Optional[str]]:
@@ -982,14 +1060,19 @@ def _prepare_runtime_pgie_config(config_path: str, batch_size: int) -> Tuple[str
         pass
 
     overrides: Dict[str, str] = {}
+    _add_absolute_pgie_file_overrides(config_path, overrides)
     fallback_dir = Path.home() / ".cache" / "ai-people-counting" / "engines"
     fallback_cfg_dir = Path.home() / ".cache" / "ai-people-counting" / "configs"
     fallback_model_dir = Path.home() / ".cache" / "ai-people-counting" / "models"
 
     active_engine_file = engine_file
+    batch_engine_file = _engine_path_for_batch(active_engine_file, batch_size)
+    if batch_engine_file != active_engine_file:
+        active_engine_file = batch_engine_file
+        overrides["model-engine-file"] = str(active_engine_file)
     if not os.access(str(engine_file.parent), os.W_OK):
         fallback_dir.mkdir(parents=True, exist_ok=True)
-        active_engine_file = fallback_dir / (engine_file.name or "primary_detector.engine")
+        active_engine_file = fallback_dir / (active_engine_file.name or "primary_detector.engine")
         overrides["model-engine-file"] = str(active_engine_file)
         print(f"[WARN] model-engine-file no escribible: {engine_file.parent}")
         print(f"[WARN] Se usara cache de engine en: {active_engine_file}")
@@ -1451,10 +1534,14 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> None:
 
     settings = store.data["settings"]
     ds_cfg = store.data["deepstream"]
-    pgie_config_path = ds_cfg.get("pgie_config_path")
-    if not pgie_config_path or not Path(pgie_config_path).exists():
+    pgie_config_path = ds_cfg.get("pgie_config_path") or DEFAULT_PEOPLENET_PGIE_CONFIG
+    pgie_path = Path(str(pgie_config_path)).expanduser()
+    if not pgie_path.is_absolute():
+        pgie_path = Path(repo_path(str(pgie_config_path)))
+    if not pgie_path.exists():
         pgie_candidates = [
-            pgie_config_path or "",
+            str(pgie_path),
+            repo_path(DEFAULT_PEOPLENET_PGIE_CONFIG),
             "/opt/nvidia/deepstream/deepstream-7.1/samples/configs/deepstream-app/config_infer_primary.txt",
             "/opt/nvidia/deepstream/deepstream/samples/configs/deepstream-app/config_infer_primary.txt",
         ]
@@ -1463,6 +1550,8 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> None:
             raise RuntimeError(f"pgie_config_path no existe: {pgie_config_path}")
         print(f"[WARN] pgie_config_path ajustado automaticamente a: {resolved}")
         pgie_config_path = resolved
+    else:
+        pgie_config_path = str(pgie_path)
 
     base_pgie_config_path = str(pgie_config_path)
     pgie_config_path, engine_path = _prepare_runtime_pgie_config(base_pgie_config_path, len(cameras))
@@ -1495,14 +1584,45 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> None:
     tiler = Gst.ElementFactory.make("nvmultistreamtiler", "tiler")
     nvvidconv = Gst.ElementFactory.make("nvvideoconvert", "nvvidconv")
     nvosd = Gst.ElementFactory.make("nvdsosd", "onscreendisplay")
+    output_tee = Gst.ElementFactory.make("tee", "output-tee")
     queue1 = Gst.ElementFactory.make("queue", "q1")
     queue2 = Gst.ElementFactory.make("queue", "q2")
     queue3 = Gst.ElementFactory.make("queue", "q3")
     queue4 = Gst.ElementFactory.make("queue", "q4")
     queue5 = Gst.ElementFactory.make("queue", "q5")
+    display_queue = Gst.ElementFactory.make("queue", "display-q")
 
-    if not all([streammux, pgie, tracker, tiler, nvvidconv, nvosd, queue1, queue2, queue3, queue4, queue5]):
+    if not all([streammux, pgie, tracker, tiler, nvvidconv, nvosd, output_tee, queue1, queue2, queue3, queue4, queue5, display_queue]):
         raise RuntimeError("No se pudieron crear elementos de pipeline DeepStream")
+
+    processed_rtsp_cfg = ds_cfg.get("processed_rtsp", {}) or {}
+    processed_rtsp_enabled = bool(processed_rtsp_cfg.get("enabled", False))
+    rtsp_server = None
+    rtsp_factory = None
+    rtsp_udp_port = 5400
+    rtsp_elements = []
+    rtsp_queue = rtsp_conv = rtsp_caps = rtsp_encoder = rtsp_sw_conv = rtsp_parse = rtsp_pay = rtsp_sink = None
+    rtsp_uses_hw_encoder = False
+    if processed_rtsp_enabled:
+        gi.require_version("GstRtspServer", "1.0")
+        from gi.repository import GstRtspServer
+
+        rtsp_queue = Gst.ElementFactory.make("queue", "rtsp-q")
+        rtsp_conv = Gst.ElementFactory.make("nvvideoconvert", "rtsp-conv")
+        rtsp_caps = Gst.ElementFactory.make("capsfilter", "rtsp-caps")
+        rtsp_encoder = Gst.ElementFactory.make("nvv4l2h264enc", "rtsp-h264-enc")
+        rtsp_uses_hw_encoder = rtsp_encoder is not None
+        if not rtsp_uses_hw_encoder:
+            rtsp_sw_conv = Gst.ElementFactory.make("videoconvert", "rtsp-sw-conv")
+            rtsp_encoder = Gst.ElementFactory.make("x264enc", "rtsp-h264-enc")
+        rtsp_parse = Gst.ElementFactory.make("h264parse", "rtsp-h264-parse")
+        rtsp_pay = Gst.ElementFactory.make("rtph264pay", "rtsp-h264-pay")
+        rtsp_sink = Gst.ElementFactory.make("udpsink", "rtsp-udp-sink")
+        rtsp_elements = [rtsp_queue, rtsp_conv, rtsp_caps, rtsp_encoder, rtsp_parse, rtsp_pay, rtsp_sink]
+        if rtsp_sw_conv is not None:
+            rtsp_elements.append(rtsp_sw_conv)
+        if not all(rtsp_elements):
+            raise RuntimeError("No se pudieron crear elementos para salida RTSP procesada")
 
     pipeline.add(streammux)
 
@@ -1531,6 +1651,8 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> None:
     pipeline.add(nvvidconv)
     pipeline.add(queue5)
     pipeline.add(nvosd)
+    pipeline.add(output_tee)
+    pipeline.add(display_queue)
 
     if no_display:
         sink = Gst.ElementFactory.make("fakesink", "fakesink")
@@ -1549,6 +1671,9 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> None:
             sink = Gst.ElementFactory.make("autovideosink", "video-sink")
             pipeline.add(sink)
 
+    for elem in rtsp_elements:
+        pipeline.add(elem)
+
     live_source = any(str(c.get("uri", "")).startswith("rtsp://") for c in cameras)
     streammux.set_property("batch-size", len(cameras))
     streammux.set_property("width", int(settings.get("source_width", 1280)))
@@ -1559,6 +1684,9 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> None:
     pgie.set_property("config-file-path", pgie_config_path)
     if pgie.get_property("batch-size") != len(cameras):
         pgie.set_property("batch-size", len(cameras))
+
+    person_class_id = int(settings.get("person_class_id", 0))
+    min_conf = float(settings.get("min_detector_confidence", 0.25))
 
     tracker_cfg = dict(ds_cfg.get("tracker", {}))
     ll_lib_path = str(tracker_cfg.get("ll-lib-file", "")).strip()
@@ -1587,16 +1715,14 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> None:
         print(f"[WARN] tracker ll-config-file ajustado automaticamente a: {resolved}")
         tracker_cfg["ll-config-file"] = resolved
 
-    if no_display:
-        active_tracker_cfg = str(tracker_cfg.get("ll-config-file", ""))
-        if "nvdcf" in active_tracker_cfg.lower():
-            iou_candidate = str(Path(active_tracker_cfg).with_name("config_tracker_IOU.yml"))
-            if Path(iou_candidate).exists():
-                print(f"[WARN] Modo headless: usando tracker IOU para evitar fallos EGL de NvDCF: {iou_candidate}")
-                tracker_cfg["ll-config-file"] = iou_candidate
-
     for key, value in tracker_cfg.items():
         _set_if_prop_exists(tracker, key, value)
+
+    print(f"[INFO] PGIE config activo: {pgie_config_path}")
+    print(f"[INFO] TensorRT engine activo: {engine_path or 'no definido en PGIE'}")
+    print(f"[INFO] person_class_id activo: {person_class_id}")
+    print(f"[INFO] min_detector_confidence configurado (diagnostico/pre-tracker): {min_conf}")
+    print(f"[INFO] Tracker config activo: {tracker_cfg.get('ll-config-file', 'no definido')}")
 
     rows = int(math.sqrt(len(cameras))) or 1
     cols = int(math.ceil(len(cameras) / rows))
@@ -1606,24 +1732,81 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> None:
     tiler.set_property("height", int(settings.get("source_height", 720) * rows))
 
     _link_elements_or_raise(streammux, queue1, pgie, queue2, tracker, queue3, tiler, queue4, nvvidconv, queue5, nvosd)
+    if not nvosd.link(output_tee):
+        raise RuntimeError("Error linkeando nvosd -> output tee")
 
+    _link_tee_to_queue_or_raise(output_tee, display_queue, "display")
     if no_display:
-        if not nvosd.link(sink):
+        if not display_queue.link(sink):
             raise RuntimeError("Error linkeando sink")
     else:
         if platform.machine() == "aarch64":
-            if not nvosd.link(transform) or not transform.link(sink):
+            if not display_queue.link(transform) or not transform.link(sink):
                 raise RuntimeError("Error linkeando output con EGL")
         else:
-            if not nvosd.link(sink):
+            if not display_queue.link(sink):
                 raise RuntimeError("Error linkeando output")
+
+    if processed_rtsp_enabled:
+        _link_tee_to_queue_or_raise(output_tee, rtsp_queue, "rtsp")
+        rtsp_width = int(processed_rtsp_cfg.get("width", 640))
+        rtsp_height = int(processed_rtsp_cfg.get("height", 360))
+        rtsp_fps = max(int(processed_rtsp_cfg.get("fps", 5)), 1)
+        rtsp_bitrate = max(int(processed_rtsp_cfg.get("bitrate", 1_000_000)), 1)
+        rtsp_caps.set_property(
+            "caps",
+            Gst.Caps.from_string(
+                (
+                    f"video/x-raw(memory:NVMM), width={rtsp_width}, height={rtsp_height}, "
+                    f"format=NV12, framerate={rtsp_fps}/1"
+                )
+                if rtsp_uses_hw_encoder
+                else (
+                    f"video/x-raw, width={rtsp_width}, height={rtsp_height}, "
+                    f"format=I420, framerate={rtsp_fps}/1"
+                )
+            ),
+        )
+        if rtsp_uses_hw_encoder:
+            _set_if_prop_exists(rtsp_encoder, "bitrate", rtsp_bitrate)
+            _set_if_prop_exists(rtsp_encoder, "insert-sps-pps", True)
+            _set_if_prop_exists(rtsp_encoder, "iframeinterval", rtsp_fps)
+        else:
+            _set_if_prop_exists(rtsp_encoder, "bitrate", max(rtsp_bitrate // 1000, 1))
+            _set_if_prop_exists(rtsp_encoder, "tune", "zerolatency")
+            _set_if_prop_exists(rtsp_encoder, "speed-preset", "ultrafast")
+        _set_if_prop_exists(rtsp_pay, "pt", 96)
+        _set_if_prop_exists(rtsp_pay, "config-interval", 1)
+        rtsp_sink.set_property("host", "127.0.0.1")
+        rtsp_sink.set_property("port", rtsp_udp_port)
+        rtsp_sink.set_property("sync", False)
+        rtsp_sink.set_property("async", False)
+        if rtsp_uses_hw_encoder:
+            _link_elements_or_raise(rtsp_queue, rtsp_conv, rtsp_caps, rtsp_encoder, rtsp_parse, rtsp_pay, rtsp_sink)
+        else:
+            _link_elements_or_raise(rtsp_queue, rtsp_conv, rtsp_caps, rtsp_sw_conv, rtsp_encoder, rtsp_parse, rtsp_pay, rtsp_sink)
+
+        rtsp_service, rtsp_mount = _parse_rtsp_output_url(str(processed_rtsp_cfg.get("url", "")))
+        rtsp_server = GstRtspServer.RTSPServer.new()
+        rtsp_server.set_service(rtsp_service)
+        rtsp_factory = GstRtspServer.RTSPMediaFactory.new()
+        rtsp_factory.set_launch(
+            f'( udpsrc port={rtsp_udp_port} caps="application/x-rtp, media=video, '
+            'clock-rate=90000, encoding-name=H264, payload=96" ! '
+            'rtph264depay ! h264parse ! rtph264pay name=pay0 pt=96 config-interval=1 )'
+        )
+        rtsp_factory.set_shared(True)
+        rtsp_server.get_mount_points().add_factory(rtsp_mount, rtsp_factory)
+        rtsp_server.attach(None)
+        print(
+            f"[INFO] RTSP procesado activo: rtsp://0.0.0.0:{rtsp_service}{rtsp_mount} "
+            f"({rtsp_width}x{rtsp_height}@{rtsp_fps}fps, bitrate={rtsp_bitrate}, "
+            f"encoder={'nvv4l2h264enc' if rtsp_uses_hw_encoder else 'x264enc'})"
+        )
 
     sink_pad = tracker.get_static_pad("src")
     if sink_pad is None:
         raise RuntimeError("No se pudo obtener tracker src pad")
-
-    person_class_id = int(settings.get("person_class_id", 0))
-    min_conf = float(settings.get("min_detector_confidence", 0.25))
 
     def add_overlay(frame_meta, batch_meta, cam):
         cam_id = str(cam["id"])
@@ -1693,7 +1876,7 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> None:
                     except StopIteration:
                         break
 
-                    if core._is_person_meta(obj_meta, person_class_id) and float(obj_meta.confidence) >= min_conf:
+                    if core._is_person_meta(obj_meta, person_class_id):
                         oid = int(obj_meta.object_id)
                         if oid >= 0:
                             rect = obj_meta.rect_params

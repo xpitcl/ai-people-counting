@@ -1,0 +1,46 @@
+services:
+  people-counter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    network_mode: host
+    runtime: nvidia
+    privileged: true
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+      PYTHONUNBUFFERED: "1"
+      CONFIG_PATH: ${CONFIG_PATH:-/data/config.json}
+      CONFIG_TEMPLATE_PATH: ${CONFIG_TEMPLATE_PATH:-/app/config_template.json}
+      CONFIG_JSON: ${CONFIG_JSON:-}
+      CONFIG_OVERWRITE: ${CONFIG_OVERWRITE:-0}
+      CONFIG_PRESERVE_STATE: ${CONFIG_PRESERVE_STATE:-1}
+      BACKEND: ${BACKEND:-deepstream}
+      NO_DISPLAY: ${NO_DISPLAY:-1}
+      SETUP_PEOPLENET: ${SETUP_PEOPLENET:-1}
+      INTERVAL_SEC: ${INTERVAL_SEC:-60}
+      PERSON_CLASS_ID: ${PERSON_CLASS_ID:-0}
+      MIN_DETECTOR_CONFIDENCE: ${MIN_DETECTOR_CONFIDENCE:-0.25}
+      MQTT_HOST: ${MQTT_HOST:-}
+      MQTT_PORT: ${MQTT_PORT:-1883}
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
+      MQTT_CLIENT_ID: ${MQTT_CLIENT_ID:-jetson-orin-nano-counter}
+      MQTT_TOPIC_TEMPLATE: ${MQTT_TOPIC_TEMPLATE:-location/{location_id}/device/{device_id}/event/up}
+      MQTT_QOS: ${MQTT_QOS:-1}
+      MQTT_RETAIN: ${MQTT_RETAIN:-0}
+      CAMERAS_JSON: ${CAMERAS_JSON:-}
+      PROCESSED_RTSP_ENABLED: ${PROCESSED_RTSP_ENABLED:-0}
+      PROCESSED_RTSP_URL: ${PROCESSED_RTSP_URL:-rtsp://127.0.0.1:18554/people-counter}
+      PROCESSED_RTSP_WIDTH: ${PROCESSED_RTSP_WIDTH:-640}
+      PROCESSED_RTSP_HEIGHT: ${PROCESSED_RTSP_HEIGHT:-360}
+      PROCESSED_RTSP_FPS: ${PROCESSED_RTSP_FPS:-5}
+      PROCESSED_RTSP_BITRATE: ${PROCESSED_RTSP_BITRATE:-1000000}
+    volumes:
+      - people-counter-data:/data
+      - people-counter-cache:/root/.cache/ai-people-counting
+
+volumes:
+  people-counter-data:
+  people-counter-cache:

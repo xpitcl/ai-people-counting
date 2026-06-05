@@ -1,7 +1,7 @@
 {
   "settings": {
     "interval_sec": 60,
-    "person_class_id": 2,
+    "person_class_id": 0,
     "min_crossing_gap_frames": 12,
     "track_max_idle_frames": 120,
     "line_deadband_px": 3.0,
@@ -10,19 +10,27 @@
     "streammux_batch_timeout_us": 40000,
     "min_detector_confidence": 0.25,
     "mqtt": {
-      "host": "horus.xpit.cl",
+      "host": "YOUR_MQTT_HOST",
       "port": 1883,
       "topic_template": "location/{location_id}/device/{device_id}/event/up",
-      "client_id": "ec9e00c6c2ea45a7cdf7",
-      "username": "xpitcentral",
-      "password": "nX2?Oc1DXQxY?1MLIVw[",
+      "client_id": "jetson-orin-nano-counter",
+      "username": "",
+      "password": "",
       "qos": 1,
       "retain": false,
       "keepalive": 30
     }
   },
   "deepstream": {
-    "pgie_config_path": "/opt/nvidia/deepstream/deepstream-7.1/samples/configs/deepstream-app/config_infer_primary.txt",
+    "pgie_config_path": "configs/deepstream/config_infer_primary_peoplenet.txt",
+    "processed_rtsp": {
+      "enabled": false,
+      "url": "rtsp://127.0.0.1:18554/people-counter",
+      "width": 640,
+      "height": 360,
+      "fps": 5,
+      "bitrate": 1000000
+    },
     "tracker": {
       "tracker-width": 640,
       "tracker-height": 384,
@@ -35,46 +43,20 @@
   },
   "cameras": [
     {
-      "id": "6d8de9f533846bb719e7b3ca",
+      "id": "cam_1",
       "name": "Camara 1",
-      "location_id": "ec9e00c6c2ea45a7cdf7",
-      "uri": "rtsp://admin:polo1010@192.168.1.134:554/Streaming/channels/101",
+      "location_id": "no_code_location",
+      "uri": "rtsp://USER:PASS@IP:554/Streaming/channels/101",
       "line": {
         "id": "cam_1_line_1",
-        "p1": [
-          636,
-          62
-        ],
-        "p2": [
-          623,
-          629
-        ],
-        "in_direction": [
-          -189,
-          -3
-        ]
+        "p1": [636, 62],
+        "p2": [623, 629],
+        "in_direction": [-189, -3]
       }
     }
   ],
   "state": {
-    "totals": {
-      "cam_1": {
-        "in": 0,
-        "out": 0
-      },
-      "cam_2": {
-        "in": 0,
-        "out": 0
-      },
-      "cam_3": {
-        "in": 0,
-        "out": 0
-      },
-      "cam_4": {
-        "in": 0,
-        "out": 0
-      }
-    },
+    "totals": {},
     "pending_mqtt": [],
     "last_minute_payload_utc": null
   },
@@ -84,14 +66,8 @@
   "opencv": {
     "detector": "hog",
     "detect_every_n_frames": 2,
-    "hog_win_stride": [
-      8,
-      8
-    ],
-    "hog_padding": [
-      8,
-      8
-    ],
+    "hog_win_stride": [8, 8],
+    "hog_padding": [8, 8],
     "hog_scale": 1.05,
     "hog_hit_threshold": 0.0,
     "hog_min_confidence": 0.0,

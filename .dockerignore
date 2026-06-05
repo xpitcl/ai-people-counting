@@ -1,7 +1,11 @@
+.git
+.gitignore
 __pycache__/
 *.pyc
-mqtt_msg.js
 .DS_Store
 config.json
 run.log
-*.log
+*.engine
+*.etlt
+*.onnx
+*.tmp
