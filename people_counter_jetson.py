@@ -32,6 +32,7 @@ import json
 import math
 import os
 import platform
+import shutil
 import socket
 import sys
 import threading
@@ -886,6 +887,21 @@ def _read_pgie_key(config_path: str, key: str) -> Optional[str]:
     return None
 
 
+def _read_pgie_raw_key(config_path: str, key: str) -> Optional[str]:
+    try:
+        with Path(config_path).open("r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                if k.strip() == key:
+                    return v.strip().strip('"').strip("'")
+    except Exception:
+        return None
+    return None
+
+
 def _write_pgie_runtime_config(source_config: str, target_config: str, overrides: Dict[str, str]) -> None:
     src = Path(source_config)
     dst = Path(target_config)
@@ -912,7 +928,31 @@ def _write_pgie_runtime_config(source_config: str, target_config: str, overrides
     dst.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
 
 
-def _prepare_runtime_pgie_config(config_path: str) -> Tuple[str, Optional[str]]:
+def _copy_runtime_model_asset(source_path: str, target_dir: Path) -> Optional[str]:
+    source = Path(source_path).expanduser()
+    if not source.exists() or not source.is_file():
+        return None
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / source.name
+    try:
+        if not target.exists() or source.stat().st_size != target.stat().st_size:
+            shutil.copy2(source, target)
+    except Exception as exc:
+        print(f"[WARN] No se pudo copiar modelo PGIE a cache: {source} -> {target}: {exc}")
+        return None
+    return str(target)
+
+
+def _infer_generated_engine_path(config_path: str, model_path: str, batch_size: int) -> str:
+    network_mode = (_read_pgie_raw_key(config_path, "network-mode") or "").strip()
+    precision_by_mode = {"0": "fp32", "1": "int8", "2": "fp16"}
+    precision = precision_by_mode.get(network_mode, "fp32")
+    gpu_id = (_read_pgie_raw_key(config_path, "gpu-id") or "0").strip() or "0"
+    return f"{model_path}_b{batch_size}_gpu{gpu_id}_{precision}.engine"
+
+
+def _prepare_runtime_pgie_config(config_path: str, batch_size: int) -> Tuple[str, Optional[str]]:
     engine_path = _read_pgie_key(config_path, "model-engine-file")
     if not engine_path:
         return (config_path, None)
@@ -923,23 +963,51 @@ def _prepare_runtime_pgie_config(config_path: str) -> Tuple[str, Optional[str]]:
     except Exception:
         pass
 
-    if os.access(str(engine_file.parent), os.W_OK):
-        return (config_path, str(engine_file))
-
+    overrides: Dict[str, str] = {}
     fallback_dir = Path.home() / ".cache" / "ai-people-counting" / "engines"
     fallback_cfg_dir = Path.home() / ".cache" / "ai-people-counting" / "configs"
-    fallback_dir.mkdir(parents=True, exist_ok=True)
+    fallback_model_dir = Path.home() / ".cache" / "ai-people-counting" / "models"
+
+    active_engine_file = engine_file
+    if not os.access(str(engine_file.parent), os.W_OK):
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        active_engine_file = fallback_dir / (engine_file.name or "primary_detector.engine")
+        overrides["model-engine-file"] = str(active_engine_file)
+        print(f"[WARN] model-engine-file no escribible: {engine_file.parent}")
+        print(f"[WARN] Se usara cache de engine en: {active_engine_file}")
+
+    # nvinfer can derive the serialized TensorRT engine path from the model path
+    # when it has to build from ONNX/UFF/ETLT. If the model lives under NVIDIA's
+    # read-only samples directory, copy it to a writable cache so the generated
+    # engine persists across restarts.
+    for model_key in ("onnx-file", "tlt-encoded-model", "uff-file", "model-file"):
+        model_path = _read_pgie_key(config_path, model_key)
+        if not model_path:
+            continue
+        model_dir = Path(model_path).expanduser().parent
+        if os.access(str(model_dir), os.W_OK):
+            continue
+        cached_model = _copy_runtime_model_asset(model_path, fallback_model_dir)
+        if cached_model:
+            overrides[model_key] = cached_model
+            active_engine_file = Path(_infer_generated_engine_path(config_path, cached_model, batch_size))
+            overrides["model-engine-file"] = str(active_engine_file)
+            print(f"[WARN] {model_key} esta en una carpeta no escribible: {model_dir}")
+            print(f"[WARN] Se usara copia runtime del modelo en: {cached_model}")
+            print(f"[WARN] Se usara engine runtime en: {active_engine_file}")
+        break
+
+    if not overrides:
+        return (config_path, str(engine_file))
+
     fallback_cfg_dir.mkdir(parents=True, exist_ok=True)
-    fallback_engine = fallback_dir / (engine_file.name or "primary_detector.engine")
     runtime_cfg = fallback_cfg_dir / f"{Path(config_path).stem}.runtime.txt"
     _write_pgie_runtime_config(
         source_config=config_path,
         target_config=str(runtime_cfg),
-        overrides={"model-engine-file": str(fallback_engine)},
+        overrides=overrides,
     )
-    print(f"[WARN] model-engine-file no escribible: {engine_file.parent}")
-    print(f"[WARN] Se usara cache de engine en: {fallback_engine}")
-    return (str(runtime_cfg), str(fallback_engine))
+    return (str(runtime_cfg), str(active_engine_file))
 
 
 def _open_capture_with_fallback(uri: str):
@@ -1376,7 +1444,7 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> None:
         pgie_config_path = resolved
 
     base_pgie_config_path = str(pgie_config_path)
-    pgie_config_path, engine_path = _prepare_runtime_pgie_config(base_pgie_config_path)
+    pgie_config_path, engine_path = _prepare_runtime_pgie_config(base_pgie_config_path, len(cameras))
     if Path(base_pgie_config_path).resolve() != Path(pgie_config_path).resolve():
         print(f"[INFO] Usando config PGIE runtime: {pgie_config_path}")
 
