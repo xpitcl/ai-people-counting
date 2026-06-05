@@ -952,6 +952,24 @@ def _infer_generated_engine_path(config_path: str, model_path: str, batch_size: 
     return f"{model_path}_b{batch_size}_gpu{gpu_id}_{precision}.engine"
 
 
+def _add_absolute_pgie_file_overrides(config_path: str, overrides: Dict[str, str]) -> None:
+    relative_file_keys = (
+        "labelfile-path",
+        "label-file-path",
+        "int8-calib-file",
+        "mean-file",
+        "proto-file",
+        "custom-lib-path",
+    )
+    for key in relative_file_keys:
+        raw_value = _read_pgie_raw_key(config_path, key)
+        if not raw_value or Path(raw_value).expanduser().is_absolute():
+            continue
+        resolved = _read_pgie_key(config_path, key)
+        if resolved and Path(resolved).exists():
+            overrides.setdefault(key, resolved)
+
+
 def _prepare_runtime_pgie_config(config_path: str, batch_size: int) -> Tuple[str, Optional[str]]:
     engine_path = _read_pgie_key(config_path, "model-engine-file")
     if not engine_path:
@@ -996,6 +1014,9 @@ def _prepare_runtime_pgie_config(config_path: str, batch_size: int) -> Tuple[str
             print(f"[WARN] Se usara copia runtime del modelo en: {cached_model}")
             print(f"[WARN] Se usara engine runtime en: {active_engine_file}")
         break
+
+    if overrides:
+        _add_absolute_pgie_file_overrides(config_path, overrides)
 
     if not overrides:
         return (config_path, str(engine_file))
