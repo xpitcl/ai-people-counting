@@ -876,6 +876,10 @@ def create_source_bin(index, uri):
         if "source" in name:
             _set_if_prop_exists(obj, "drop-on-latency", True)
             _set_if_prop_exists(obj, "latency", 200)
+            if str(uri).lower().startswith("rtsp://"):
+                # GstRTSPLowerTrans.TCP. TCP is more reliable for IP cameras
+                # and avoids UDP packet loss through container networking.
+                _set_if_prop_exists(obj, "protocols", 4)
 
     def cb_newpad(decodebin, decoder_src_pad, data):
         caps = decoder_src_pad.get_current_caps()
@@ -902,7 +906,7 @@ def create_source_bin(index, uri):
     return nbin
 
 
-def bus_call(bus, message, loop):
+def bus_call(bus, message, loop, runtime_state):
     import gi
 
     gi.require_version("Gst", "1.0")
@@ -911,10 +915,12 @@ def bus_call(bus, message, loop):
     mtype = message.type
     if mtype == Gst.MessageType.EOS:
         print("EOS recibido.")
+        runtime_state["restart_reason"] = "La fuente de video envio EOS."
         loop.quit()
     elif mtype == Gst.MessageType.ERROR:
         err, dbg = message.parse_error()
         print(f"[ERROR] {err}: {dbg}")
+        runtime_state["restart_reason"] = str(err)
         loop.quit()
     elif mtype == Gst.MessageType.WARNING:
         err, dbg = message.parse_warning()
@@ -1512,7 +1518,7 @@ def run_counter_opencv(store: ConfigStore, no_display: bool = False) -> None:
         mqtt_pub.stop()
 
 
-def run_counter(store: ConfigStore, no_display: bool = False) -> None:
+def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
     require_runtime_modules()
 
     import gi
@@ -1898,8 +1904,9 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> None:
 
     loop = GLib.MainLoop()
     bus = pipeline.get_bus()
+    runtime_state = {"restart_reason": None}
     bus.add_signal_watch()
-    bus.connect("message", bus_call, loop)
+    bus_handler_id = bus.connect("message", bus_call, loop, runtime_state)
 
     interval_sec = int(settings.get("interval_sec", 60))
 
@@ -1914,7 +1921,7 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> None:
             store.save()
         return True
 
-    GLib.timeout_add_seconds(interval_sec, minute_tick)
+    interval_source_id = GLib.timeout_add_seconds(interval_sec, minute_tick)
 
     print(f"Iniciando pipeline con {len(cameras)} camaras...")
     mqtt_cfg = store.data.get("settings", {}).get("mqtt", {})
@@ -1939,7 +1946,13 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> None:
         except Exception:
             pass
         pipeline.set_state(Gst.State.NULL)
+        if interval_source_id:
+            GLib.source_remove(interval_source_id)
+        if bus_handler_id:
+            bus.disconnect(bus_handler_id)
+        bus.remove_signal_watch()
         mqtt_pub.stop()
+    return runtime_state["restart_reason"]
 
 
 def main():
@@ -1985,7 +1998,18 @@ def main():
     if backend == "opencv":
         run_counter_opencv(store, no_display=args.no_display)
     else:
-        run_counter(store, no_display=args.no_display)
+        retry_delay_sec = 10
+        while True:
+            restart_reason = run_counter(store, no_display=args.no_display)
+            if not restart_reason:
+                break
+            print(f"[WARN] Pipeline detenido: {restart_reason}")
+            print(f"[INFO] Reintentando conexion y reconstruyendo pipeline en {retry_delay_sec}s...")
+            try:
+                time.sleep(retry_delay_sec)
+            except KeyboardInterrupt:
+                print("Deteniendo por teclado...")
+                break
     return 0
 
 
