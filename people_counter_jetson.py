@@ -1819,9 +1819,9 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
         rtsp_server.set_service(rtsp_service)
         rtsp_factory = GstRtspServer.RTSPMediaFactory.new()
         rtsp_factory.set_launch(
-            f'( udpsrc port={rtsp_udp_port} caps="application/x-rtp, media=video, '
-            'clock-rate=90000, encoding-name=H264, payload=96" ! '
-            'rtph264depay ! h264parse ! rtph264pay name=pay0 pt=96 config-interval=1 )'
+            f'( udpsrc name=pay0 port={rtsp_udp_port} buffer-size=524288 '
+            'caps="application/x-rtp, media=(string)video, clock-rate=(int)90000, '
+            'encoding-name=(string)H264, payload=(int)96" )'
         )
         rtsp_factory.set_shared(True)
         rtsp_server.get_mount_points().add_factory(rtsp_mount, rtsp_factory)
