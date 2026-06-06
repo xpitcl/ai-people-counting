@@ -1875,10 +1875,23 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
         line = cam.get("line", {})
         p1 = line.get("p1", [100, 100])
         p2 = line.get("p2", [400, 100])
+        in_dir = normalize_vec(line.get("in_direction", [0, -1]))
+
+        line_mid_x = (float(p1[0]) + float(p2[0])) * 0.5
+        line_mid_y = (float(p1[1]) + float(p2[1])) * 0.5
+        arrow_length = 70.0
+        arrow_head_length = 18.0
+        arrow_head_width = 10.0
+        arrow_tip_x = line_mid_x + in_dir[0] * arrow_length
+        arrow_tip_y = line_mid_y + in_dir[1] * arrow_length
+        arrow_base_x = arrow_tip_x - in_dir[0] * arrow_head_length
+        arrow_base_y = arrow_tip_y - in_dir[1] * arrow_head_length
+        perpendicular_x = -in_dir[1]
+        perpendicular_y = in_dir[0]
 
         display_meta = pyds.nvds_acquire_display_meta_from_pool(batch_meta)
         display_meta.num_labels = 1
-        display_meta.num_lines = 1
+        display_meta.num_lines = 4
 
         txt_params = display_meta.text_params[0]
         txt_params.display_text = text
@@ -1897,6 +1910,30 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
         line_params.y2 = int(p2[1])
         line_params.line_width = 3
         line_params.line_color.set(0.0, 1.0, 0.0, 1.0)
+
+        arrow_segments = (
+            (line_mid_x, line_mid_y, arrow_tip_x, arrow_tip_y),
+            (
+                arrow_tip_x,
+                arrow_tip_y,
+                arrow_base_x + perpendicular_x * arrow_head_width,
+                arrow_base_y + perpendicular_y * arrow_head_width,
+            ),
+            (
+                arrow_tip_x,
+                arrow_tip_y,
+                arrow_base_x - perpendicular_x * arrow_head_width,
+                arrow_base_y - perpendicular_y * arrow_head_width,
+            ),
+        )
+        for index, (x1, y1, x2, y2) in enumerate(arrow_segments, start=1):
+            arrow_params = display_meta.line_params[index]
+            arrow_params.x1 = int(round(x1))
+            arrow_params.y1 = int(round(y1))
+            arrow_params.x2 = int(round(x2))
+            arrow_params.y2 = int(round(y2))
+            arrow_params.line_width = 3
+            arrow_params.line_color.set(0.0, 0.8, 1.0, 1.0)
 
         pyds.nvds_add_display_meta_to_frame(frame_meta, display_meta)
 
