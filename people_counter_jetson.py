@@ -1530,6 +1530,9 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
     global pyds
     pyds = pyds_mod
 
+    main_context = GLib.MainContext.default()
+    loop = GLib.MainLoop.new(main_context, False)
+
     cameras = store.data.get("cameras", [])
     if len(cameras) == 0:
         raise RuntimeError("No hay camaras en configuracion.")
@@ -1603,6 +1606,7 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
     processed_rtsp_enabled = bool(processed_rtsp_cfg.get("enabled", False))
     rtsp_server = None
     rtsp_factory = None
+    rtsp_server_source_id = 0
     rtsp_udp_port = 5400
     rtsp_elements = []
     rtsp_queue = rtsp_conv = rtsp_caps = rtsp_encoder = rtsp_sw_conv = rtsp_parse = rtsp_pay = rtsp_sink = None
@@ -1811,6 +1815,7 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
 
         rtsp_service, rtsp_mount = _parse_rtsp_output_url(str(processed_rtsp_cfg.get("url", "")))
         rtsp_server = GstRtspServer.RTSPServer.new()
+        rtsp_server.set_address("0.0.0.0")
         rtsp_server.set_service(rtsp_service)
         rtsp_factory = GstRtspServer.RTSPMediaFactory.new()
         rtsp_factory.set_launch(
@@ -1820,7 +1825,19 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
         )
         rtsp_factory.set_shared(True)
         rtsp_server.get_mount_points().add_factory(rtsp_mount, rtsp_factory)
-        rtsp_server.attach(None)
+
+        def on_rtsp_client_connected(server, client):
+            connection = client.get_connection()
+            ip = connection.get_ip() if connection is not None else "desconocida"
+            print(f"[INFO] Cliente RTSP conectado desde: {ip}")
+
+        rtsp_server.connect("client-connected", on_rtsp_client_connected)
+        rtsp_server_source_id = rtsp_server.attach(main_context)
+        if not rtsp_server_source_id:
+            raise RuntimeError(
+                f"No se pudo iniciar servidor RTSP en 0.0.0.0:{rtsp_service}. "
+                "El puerto puede estar ocupado."
+            )
         print(
             f"[INFO] RTSP procesado activo: rtsp://0.0.0.0:{rtsp_service}{rtsp_mount} "
             f"({rtsp_width}x{rtsp_height}@{rtsp_fps}fps, bitrate={rtsp_bitrate}, "
@@ -1921,7 +1938,6 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
 
     sink_pad.add_probe(Gst.PadProbeType.BUFFER, probe_func, None)
 
-    loop = GLib.MainLoop()
     bus = pipeline.get_bus()
     runtime_state = {"restart_reason": None}
     bus.add_signal_watch()
@@ -1970,6 +1986,8 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
         if bus_handler_id:
             bus.disconnect(bus_handler_id)
         bus.remove_signal_watch()
+        if rtsp_server_source_id:
+            GLib.source_remove(rtsp_server_source_id)
         mqtt_pub.stop()
     return runtime_state["restart_reason"]
 
