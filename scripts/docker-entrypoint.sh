@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONFIG_PATH="${CONFIG_PATH:-/data/config.json}"
 APP_DIR="${APP_DIR:-/app}"
-TEMPLATE_PATH="${CONFIG_TEMPLATE_PATH:-${APP_DIR}/config_template.json}"
+CONFIG_PATH="/data/config.json"
+TEMPLATE_PATH="${APP_DIR}/config_template.json"
 
 mkdir -p "$(dirname "${CONFIG_PATH}")" "${HOME}/.cache/ai-people-counting"
 

@@ -2,7 +2,6 @@ FROM nvcr.io/nvidia/deepstream:7.1-samples-multiarch
 
 ENV PYTHONUNBUFFERED=1 \
     APP_DIR=/app \
-    CONFIG_PATH=/data/config.json \
     CACHE_ROOT=/root/.cache/ai-people-counting
 
 WORKDIR /app

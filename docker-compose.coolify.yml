@@ -8,11 +8,6 @@ services:
     runtime: nvidia
     privileged: true
     environment:
-      NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: all
-      PYTHONUNBUFFERED: "1"
-      CONFIG_PATH: ${CONFIG_PATH:-/data/config.json}
-      CONFIG_TEMPLATE_PATH: ${CONFIG_TEMPLATE_PATH:-/app/config_template.json}
       CONFIG_JSON: ${CONFIG_JSON:-}
       CONFIG_OVERWRITE: ${CONFIG_OVERWRITE:-0}
       CONFIG_PRESERVE_STATE: ${CONFIG_PRESERVE_STATE:-1}

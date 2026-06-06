@@ -5,3 +5,4 @@ mqtt_msg.js
 config.json
 run.log
 *.log
+tmp.*
