@@ -149,7 +149,7 @@ Si `PROCESSED_RTSP_ENABLED=1`, el servicio publica un RTSP H.264 con el mosaico 
 rtsp://IP_DE_LA_JETSON:18554/people-counter
 ```
 
-El pipeline intenta usar `nvv4l2h264enc`; si no está disponible, cae a `x264enc`, lo que puede aumentar carga de CPU.
+La imagen intenta usar `nvv4l2h264enc` para codificación H.264 por hardware. Si ese plugin no está disponible, usa `x264enc` por CPU, lo que puede aumentar la carga, y registra el encoder seleccionado al iniciar.
 
 Configura siempre las camaras con `CAMERAS_JSON`:
 

@@ -2,7 +2,9 @@ FROM nvcr.io/nvidia/deepstream:7.1-samples-multiarch
 
 ENV PYTHONUNBUFFERED=1 \
     APP_DIR=/app \
-    CACHE_ROOT=/root/.cache/ai-people-counting
+    CACHE_ROOT=/root/.cache/ai-people-counting \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=all
 
 WORKDIR /app
 
@@ -13,6 +15,7 @@ RUN apt-get update \
         python3-gi \
         python3-opencv \
         libpython3.10 \
+        libx264-163 \
         gir1.2-gst-rtsp-server-1.0 \
         gstreamer1.0-tools \
         gstreamer1.0-rtsp \
@@ -22,6 +25,11 @@ RUN apt-get update \
         gstreamer1.0-plugins-ugly \
         curl \
         ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN if [ -x /opt/nvidia/deepstream/deepstream/user_additional_install.sh ]; then \
+        /opt/nvidia/deepstream/deepstream/user_additional_install.sh; \
+    fi \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

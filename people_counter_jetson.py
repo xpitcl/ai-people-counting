@@ -1611,22 +1611,41 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
         gi.require_version("GstRtspServer", "1.0")
         from gi.repository import GstRtspServer
 
-        rtsp_queue = Gst.ElementFactory.make("queue", "rtsp-q")
-        rtsp_conv = Gst.ElementFactory.make("nvvideoconvert", "rtsp-conv")
-        rtsp_caps = Gst.ElementFactory.make("capsfilter", "rtsp-caps")
-        rtsp_encoder = Gst.ElementFactory.make("nvv4l2h264enc", "rtsp-h264-enc")
+        rtsp_factories = {
+            "queue": Gst.ElementFactory.make("queue", "rtsp-q"),
+            "nvvideoconvert": Gst.ElementFactory.make("nvvideoconvert", "rtsp-conv"),
+            "capsfilter": Gst.ElementFactory.make("capsfilter", "rtsp-caps"),
+            "nvv4l2h264enc": Gst.ElementFactory.make("nvv4l2h264enc", "rtsp-h264-enc"),
+            "h264parse": Gst.ElementFactory.make("h264parse", "rtsp-h264-parse"),
+            "rtph264pay": Gst.ElementFactory.make("rtph264pay", "rtsp-h264-pay"),
+            "udpsink": Gst.ElementFactory.make("udpsink", "rtsp-udp-sink"),
+        }
+        rtsp_queue = rtsp_factories["queue"]
+        rtsp_conv = rtsp_factories["nvvideoconvert"]
+        rtsp_caps = rtsp_factories["capsfilter"]
+        rtsp_encoder = rtsp_factories["nvv4l2h264enc"]
         rtsp_uses_hw_encoder = rtsp_encoder is not None
         if not rtsp_uses_hw_encoder:
-            rtsp_sw_conv = Gst.ElementFactory.make("videoconvert", "rtsp-sw-conv")
-            rtsp_encoder = Gst.ElementFactory.make("x264enc", "rtsp-h264-enc")
-        rtsp_parse = Gst.ElementFactory.make("h264parse", "rtsp-h264-parse")
-        rtsp_pay = Gst.ElementFactory.make("rtph264pay", "rtsp-h264-pay")
-        rtsp_sink = Gst.ElementFactory.make("udpsink", "rtsp-udp-sink")
+            rtsp_factories["videoconvert"] = Gst.ElementFactory.make("videoconvert", "rtsp-sw-conv")
+            rtsp_factories["x264enc"] = Gst.ElementFactory.make("x264enc", "rtsp-h264-enc")
+            rtsp_sw_conv = rtsp_factories["videoconvert"]
+            rtsp_encoder = rtsp_factories["x264enc"]
+        rtsp_parse = rtsp_factories["h264parse"]
+        rtsp_pay = rtsp_factories["rtph264pay"]
+        rtsp_sink = rtsp_factories["udpsink"]
         rtsp_elements = [rtsp_queue, rtsp_conv, rtsp_caps, rtsp_encoder, rtsp_parse, rtsp_pay, rtsp_sink]
         if rtsp_sw_conv is not None:
             rtsp_elements.append(rtsp_sw_conv)
         if not all(rtsp_elements):
-            raise RuntimeError("No se pudieron crear elementos para salida RTSP procesada")
+            missing = [name for name, element in rtsp_factories.items() if element is None]
+            raise RuntimeError(
+                "No se pudieron crear elementos para salida RTSP procesada. "
+                f"Plugins faltantes/no cargables: {', '.join(missing)}"
+            )
+        print(
+            "[INFO] Encoder RTSP seleccionado: "
+            f"{'nvv4l2h264enc (hardware)' if rtsp_uses_hw_encoder else 'x264enc (CPU)'}"
+        )
 
     pipeline.add(streammux)
 
