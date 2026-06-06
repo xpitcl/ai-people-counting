@@ -622,8 +622,6 @@ class CounterCore:
 
 
 def require_runtime_modules() -> None:
-    if cv2 is None:
-        raise RuntimeError("Falta dependencia: opencv-python o python3-opencv")
     try:
         import gi  # noqa: F401
         import pyds as pyds_check  # noqa: F401
