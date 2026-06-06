@@ -1607,6 +1607,7 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
     rtsp_server = None
     rtsp_factory = None
     rtsp_server_source_id = 0
+    rtsp_clients = []
     rtsp_udp_port = 5400
     rtsp_elements = []
     rtsp_queue = rtsp_conv = rtsp_caps = rtsp_encoder = None
@@ -1647,6 +1648,10 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
             "[INFO] Encoder RTSP seleccionado: "
             f"{'nvv4l2h264enc (hardware)' if rtsp_uses_hw_encoder else 'x264enc (CPU, Orin Nano sin NVENC)'}"
         )
+        _set_if_prop_exists(rtsp_queue, "leaky", 2)
+        _set_if_prop_exists(rtsp_queue, "max-size-buffers", 2)
+        _set_if_prop_exists(rtsp_queue, "max-size-bytes", 0)
+        _set_if_prop_exists(rtsp_queue, "max-size-time", 0)
 
     pipeline.add(streammux)
 
@@ -1835,9 +1840,11 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
             'rtph264pay name=pay0 pt=96 config-interval=1 )'
         )
         rtsp_factory.set_shared(True)
+        _set_if_prop_exists(rtsp_factory, "stop-on-disconnect", True)
         rtsp_server.get_mount_points().add_factory(rtsp_mount, rtsp_factory)
 
         def on_rtsp_client_connected(server, client):
+            rtsp_clients.append(client)
             connection = client.get_connection()
             ip = connection.get_ip() if connection is not None else "desconocida"
             print(f"[INFO] Cliente RTSP conectado desde: {ip}")
@@ -1992,7 +1999,6 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
                 store.save()
         except Exception:
             pass
-        pipeline.set_state(Gst.State.NULL)
         if interval_source_id:
             GLib.source_remove(interval_source_id)
         if bus_handler_id:
@@ -2000,6 +2006,19 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
         bus.remove_signal_watch()
         if rtsp_server_source_id:
             GLib.source_remove(rtsp_server_source_id)
+        for client in rtsp_clients:
+            try:
+                client.close()
+            except Exception:
+                pass
+        rtsp_clients.clear()
+        print("[INFO] Deteniendo pipeline GStreamer...")
+        pipeline.set_state(Gst.State.NULL)
+        state_result, _, _ = pipeline.get_state(5 * Gst.SECOND)
+        if state_result == Gst.StateChangeReturn.FAILURE:
+            print("[WARN] El pipeline reporto fallo al cambiar a estado NULL.")
+        elif state_result == Gst.StateChangeReturn.ASYNC:
+            print("[WARN] Timeout esperando que el pipeline llegue a estado NULL; se continuara el reinicio.")
         mqtt_pub.stop()
     return runtime_state["restart_reason"]
 
