@@ -2104,17 +2104,19 @@ def main():
         run_counter_opencv(store, no_display=args.no_display)
     else:
         retry_delay_sec = 10
-        while True:
-            restart_reason = run_counter(store, no_display=args.no_display)
-            if not restart_reason:
-                break
+        restart_reason = run_counter(store, no_display=args.no_display)
+        if restart_reason:
             print(f"[WARN] Pipeline detenido: {restart_reason}")
-            print(f"[INFO] Reintentando conexion y reconstruyendo pipeline en {retry_delay_sec}s...")
+            print(
+                "[INFO] El proceso terminara para liberar completamente el contexto CUDA. "
+                f"Docker lo reiniciara en aproximadamente {retry_delay_sec}s..."
+            )
             try:
                 time.sleep(retry_delay_sec)
             except KeyboardInterrupt:
                 print("Deteniendo por teclado...")
-                break
+                return 0
+            return 1
     return 0
 
 

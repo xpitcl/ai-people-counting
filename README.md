@@ -183,7 +183,7 @@ Primer despliegue:
 
 Logs en Coolify:
 - Revisa que aparezcan `PGIE config activo`, `TensorRT engine activo`, `Tracker config activo` y mensajes `[MQTT][SENT]`.
-- Si una cámara RTSP deja de responder, el proceso mantiene el contenedor activo y reconstruye el pipeline cada 10 segundos. Los intentos quedan visibles en los logs de Coolify.
+- Si una cámara RTSP deja de responder, el proceso termina después de 10 segundos y Docker reinicia el contenedor. Esto crea un contexto CUDA nuevo y evita reutilizar NvDCF después de un `EOS`. Los intentos quedan visibles en los logs de Coolify.
 - El `Dockerfile` instala el wheel oficial `pyds 1.2.0` para Jetson, compatible con DeepStream 7.1. Si `import pyds` falla tras un redeploy, confirma que Coolify haya reconstruido la imagen desde el commit más reciente y no esté reutilizando una imagen anterior.
 
 
