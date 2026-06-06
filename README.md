@@ -19,7 +19,7 @@ Archivo de plantilla seguro para versionar:
   - `paho-mqtt`
   - `opencv-python` o `python3-opencv`
   - `gi` (PyGObject, normalmente viene en Jetson)
-  - `pyds` (bindings de DeepStream, incluidos con DeepStream)
+  - `pyds` (bindings oficiales compatibles con DeepStream 7.1)
 
 Instalación típica de dependencias Python:
 
@@ -183,7 +183,7 @@ Primer despliegue:
 
 Logs en Coolify:
 - Revisa que aparezcan `PGIE config activo`, `TensorRT engine activo`, `Tracker config activo` y mensajes `[MQTT][SENT]`.
-- Si falla `import pyds`, la imagen base no trae bindings Python de DeepStream; instala/builda `pyds` para DeepStream 7.1 dentro de la imagen o usa una imagen base que ya lo incluya.
+- El `Dockerfile` instala el wheel oficial `pyds 1.2.0` para Jetson, compatible con DeepStream 7.1. Si `import pyds` falla tras un redeploy, confirma que Coolify haya reconstruido la imagen desde el commit más reciente y no esté reutilizando una imagen anterior.
 
 
 ## Backends

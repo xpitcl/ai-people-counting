@@ -27,6 +27,15 @@ COPY requirements.txt .
 RUN python3 -m pip install --no-cache-dir -r requirements.txt \
     || python3 -m pip install --break-system-packages --no-cache-dir -r requirements.txt
 
+ARG PYDS_VERSION=1.2.0
+ARG PYDS_WHEEL=pyds-1.2.0-cp310-cp310-linux_aarch64.whl
+RUN curl -fL \
+        "https://github.com/NVIDIA-AI-IOT/deepstream_python_apps/releases/download/v${PYDS_VERSION}/${PYDS_WHEEL}" \
+        -o "/tmp/${PYDS_WHEEL}" \
+    && (python3 -m pip install --no-cache-dir "/tmp/${PYDS_WHEEL}" \
+        || python3 -m pip install --break-system-packages --no-cache-dir "/tmp/${PYDS_WHEEL}") \
+    && rm -f "/tmp/${PYDS_WHEEL}"
+
 COPY . .
 
 RUN chmod +x scripts/setup_peoplenet.sh scripts/docker-entrypoint.sh \
