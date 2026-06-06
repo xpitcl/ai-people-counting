@@ -170,6 +170,62 @@ Configura siempre las camaras con `CAMERAS_JSON`:
 ]
 ```
 
+### Calibrar la linea desde una Jetson con pantalla
+
+Cuando el contador esta desplegado con Coolify, ejecuta la calibracion desde una terminal abierta en el escritorio grafico de la Jetson. No la ejecutes desde una sesion SSH sin `DISPLAY`.
+
+Obtiene el contenedor, la imagen y el volumen persistente usados por Coolify:
+
+```bash
+PC=$(docker ps -q --filter name=people-counter | head -1)
+IMAGE=$(docker inspect -f '{{.Config.Image}}' "$PC")
+DATA_VOL=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}' "$PC")
+```
+
+Detiene temporalmente el contador y permite que el contenedor abra una ventana X11:
+
+```bash
+docker stop "$PC"
+xhost +si:localuser:root
+```
+
+Inicia el modo de calibracion usando la misma imagen y el mismo volumen:
+
+```bash
+docker run --rm -it \
+  --network host \
+  --runtime nvidia \
+  --privileged \
+  -e DISPLAY="$DISPLAY" \
+  -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
+  -v "$DATA_VOL":/data \
+  --entrypoint python3 \
+  "$IMAGE" \
+  /app/people_counter_jetson.py \
+  --config /data/config.json \
+  --calibrate
+```
+
+Controles:
+- Click izquierdo: marca los dos extremos de la linea.
+- `W/A/S/D`: define la direccion de entrada de la flecha.
+- Click derecho: define una direccion de entrada personalizada.
+- `R`: reinicia el dibujo.
+- `Enter`: guarda la calibracion.
+- `Esc`: cancela.
+
+Extrae el `CAMERAS_JSON` actualizado:
+
+```bash
+docker run --rm \
+  -v "$DATA_VOL":/data \
+  --entrypoint python3 \
+  "$IMAGE" -c \
+  'import json; print(json.dumps(json.load(open("/data/config.json"))["cameras"], separators=(",",":")))'
+```
+
+Copia el resultado en la variable `CAMERAS_JSON` de Coolify y haz redeploy del `people-counter`. Esto evita que un futuro arranque restaure la linea anterior desde las variables de entorno.
+
 Tambien puedes pasar un `CONFIG_JSON` completo. Por defecto el entrypoint conserva `state` desde `/data/config.json` para no perder totales ni cola MQTT en cada redeploy; cambia `CONFIG_PRESERVE_STATE=0` si quieres reemplazarlo todo.
 
 Persistencia:
@@ -184,6 +240,7 @@ Primer despliegue:
 Logs en Coolify:
 - Revisa que aparezcan `PGIE config activo`, `TensorRT engine activo`, `Tracker config activo` y mensajes `[MQTT][SENT]`.
 - Si una cámara RTSP deja de responder, el proceso termina después de 10 segundos y Docker reinicia el contenedor. Esto crea un contexto CUDA nuevo y evita reutilizar NvDCF después de un `EOS`. Los intentos quedan visibles en los logs de Coolify.
+- En JetPack 6.2 con DeepStream 7.1, los elementos `nvvideoconvert` usan `copy-hw=2` (VIC) para evitar el fallo conocido `cudaErrorIllegalAddress` durante copias de memoria.
 - El `Dockerfile` instala el wheel oficial `pyds 1.2.0` para Jetson, compatible con DeepStream 7.1. Si `import pyds` falla tras un redeploy, confirma que Coolify haya reconstruido la imagen desde el commit más reciente y no esté reutilizando una imagen anterior.
 
 

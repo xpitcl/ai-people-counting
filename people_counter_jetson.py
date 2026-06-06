@@ -1683,6 +1683,10 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
     pipeline.add(output_tee)
     pipeline.add(display_queue)
 
+    # DeepStream 7.1 on JetPack 6.2 can hit CUDA memory-copy faults when
+    # nvvideoconvert uses the default copy engine. NVIDIA recommends VIC.
+    _set_if_prop_exists(nvvidconv, "copy-hw", 2)
+
     if no_display:
         sink = Gst.ElementFactory.make("fakesink", "fakesink")
         pipeline.add(sink)
@@ -1782,6 +1786,7 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
         rtsp_height = int(processed_rtsp_cfg.get("height", 360))
         rtsp_fps = max(int(processed_rtsp_cfg.get("fps", 5)), 1)
         rtsp_bitrate = max(int(processed_rtsp_cfg.get("bitrate", 1_000_000)), 1)
+        _set_if_prop_exists(rtsp_conv, "copy-hw", 2)
         rtsp_caps.set_property(
             "caps",
             Gst.Caps.from_string(
