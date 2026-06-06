@@ -1609,7 +1609,8 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
     rtsp_server_source_id = 0
     rtsp_udp_port = 5400
     rtsp_elements = []
-    rtsp_queue = rtsp_conv = rtsp_caps = rtsp_encoder = rtsp_sw_conv = rtsp_parse = rtsp_pay = rtsp_sink = None
+    rtsp_queue = rtsp_conv = rtsp_caps = rtsp_encoder = rtsp_sw_conv = None
+    rtsp_mem_caps = rtsp_rate = rtsp_parse = rtsp_pay = rtsp_sink = None
     rtsp_uses_hw_encoder = False
     if processed_rtsp_enabled:
         gi.require_version("GstRtspServer", "1.0")
@@ -1631,8 +1632,12 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
         rtsp_uses_hw_encoder = rtsp_encoder is not None
         if not rtsp_uses_hw_encoder:
             rtsp_factories["videoconvert"] = Gst.ElementFactory.make("videoconvert", "rtsp-sw-conv")
+            rtsp_factories["raw-capsfilter"] = Gst.ElementFactory.make("capsfilter", "rtsp-raw-caps")
+            rtsp_factories["videorate"] = Gst.ElementFactory.make("videorate", "rtsp-videorate")
             rtsp_factories["x264enc"] = Gst.ElementFactory.make("x264enc", "rtsp-h264-enc")
             rtsp_sw_conv = rtsp_factories["videoconvert"]
+            rtsp_mem_caps = rtsp_factories["raw-capsfilter"]
+            rtsp_rate = rtsp_factories["videorate"]
             rtsp_encoder = rtsp_factories["x264enc"]
         rtsp_parse = rtsp_factories["h264parse"]
         rtsp_pay = rtsp_factories["rtph264pay"]
@@ -1640,6 +1645,10 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
         rtsp_elements = [rtsp_queue, rtsp_conv, rtsp_caps, rtsp_encoder, rtsp_parse, rtsp_pay, rtsp_sink]
         if rtsp_sw_conv is not None:
             rtsp_elements.append(rtsp_sw_conv)
+        if rtsp_mem_caps is not None:
+            rtsp_elements.append(rtsp_mem_caps)
+        if rtsp_rate is not None:
+            rtsp_elements.append(rtsp_rate)
         if not all(rtsp_elements):
             missing = [name for name, element in rtsp_factories.items() if element is None]
             raise RuntimeError(
@@ -1784,8 +1793,7 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
             "caps",
             Gst.Caps.from_string(
                 (
-                    f"video/x-raw(memory:NVMM), width={rtsp_width}, height={rtsp_height}, "
-                    f"format=NV12, framerate={rtsp_fps}/1"
+                    f"video/x-raw(memory:NVMM), width={rtsp_width}, height={rtsp_height}, format=NV12"
                 )
                 if rtsp_uses_hw_encoder
                 else (
@@ -1794,6 +1802,14 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
                 )
             ),
         )
+        if not rtsp_uses_hw_encoder:
+            rtsp_mem_caps.set_property(
+                "caps",
+                Gst.Caps.from_string(
+                    f"video/x-raw, width={rtsp_width}, height={rtsp_height}, format=I420"
+                ),
+            )
+            _set_if_prop_exists(rtsp_rate, "drop-only", True)
         if rtsp_uses_hw_encoder:
             _set_if_prop_exists(rtsp_encoder, "bitrate", rtsp_bitrate)
             _set_if_prop_exists(rtsp_encoder, "insert-sps-pps", True)
@@ -1811,7 +1827,28 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
         if rtsp_uses_hw_encoder:
             _link_elements_or_raise(rtsp_queue, rtsp_conv, rtsp_caps, rtsp_encoder, rtsp_parse, rtsp_pay, rtsp_sink)
         else:
-            _link_elements_or_raise(rtsp_queue, rtsp_conv, rtsp_caps, rtsp_sw_conv, rtsp_encoder, rtsp_parse, rtsp_pay, rtsp_sink)
+            _link_elements_or_raise(
+                rtsp_queue,
+                rtsp_conv,
+                rtsp_mem_caps,
+                rtsp_sw_conv,
+                rtsp_rate,
+                rtsp_caps,
+                rtsp_encoder,
+                rtsp_parse,
+                rtsp_pay,
+                rtsp_sink,
+            )
+
+        rtp_probe_state = {"logged": False}
+
+        def rtsp_rtp_probe(pad, info, user_data):
+            if not rtp_probe_state["logged"] and info.get_buffer() is not None:
+                rtp_probe_state["logged"] = True
+                print(f"[INFO] Salida RTP H.264 activa en UDP 127.0.0.1:{rtsp_udp_port}")
+            return Gst.PadProbeReturn.OK
+
+        rtsp_pay.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, rtsp_rtp_probe, None)
 
         rtsp_service, rtsp_mount = _parse_rtsp_output_url(str(processed_rtsp_cfg.get("url", "")))
         rtsp_server = GstRtspServer.RTSPServer.new()
@@ -1819,9 +1856,11 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
         rtsp_server.set_service(rtsp_service)
         rtsp_factory = GstRtspServer.RTSPMediaFactory.new()
         rtsp_factory.set_launch(
-            f'( udpsrc name=pay0 port={rtsp_udp_port} buffer-size=524288 '
+            f'( udpsrc port={rtsp_udp_port} buffer-size=262144 '
             'caps="application/x-rtp, media=(string)video, clock-rate=(int)90000, '
-            'encoding-name=(string)H264, payload=(int)96" )'
+            'encoding-name=(string)H264, payload=(int)96" ! '
+            'rtph264depay ! h264parse ! '
+            'rtph264pay name=pay0 pt=96 config-interval=1 )'
         )
         rtsp_factory.set_shared(True)
         rtsp_server.get_mount_points().add_factory(rtsp_mount, rtsp_factory)
