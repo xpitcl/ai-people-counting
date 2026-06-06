@@ -1630,7 +1630,16 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
         rtsp_caps = rtsp_factories["capsfilter"]
         rtsp_encoder = rtsp_factories["nvv4l2h264enc"]
         rtsp_uses_hw_encoder = rtsp_encoder is not None
-        if not rtsp_uses_hw_encoder:
+        if not rtsp_uses_hw_encoder and platform.machine() == "aarch64":
+            print(
+                "[ERROR] nvv4l2h264enc no esta disponible en el contenedor. "
+                "Se deshabilita solo la salida RTSP para evitar un crash CUDA; "
+                "el conteo y MQTT continuaran activos."
+            )
+            processed_rtsp_enabled = False
+            rtsp_factories = {}
+            rtsp_elements = []
+        elif not rtsp_uses_hw_encoder:
             rtsp_factories["videoconvert"] = Gst.ElementFactory.make("videoconvert", "rtsp-sw-conv")
             rtsp_factories["raw-capsfilter"] = Gst.ElementFactory.make("capsfilter", "rtsp-raw-caps")
             rtsp_factories["videorate"] = Gst.ElementFactory.make("videorate", "rtsp-videorate")
@@ -1639,26 +1648,27 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
             rtsp_mem_caps = rtsp_factories["raw-capsfilter"]
             rtsp_rate = rtsp_factories["videorate"]
             rtsp_encoder = rtsp_factories["x264enc"]
-        rtsp_parse = rtsp_factories["h264parse"]
-        rtsp_pay = rtsp_factories["rtph264pay"]
-        rtsp_sink = rtsp_factories["udpsink"]
-        rtsp_elements = [rtsp_queue, rtsp_conv, rtsp_caps, rtsp_encoder, rtsp_parse, rtsp_pay, rtsp_sink]
-        if rtsp_sw_conv is not None:
-            rtsp_elements.append(rtsp_sw_conv)
-        if rtsp_mem_caps is not None:
-            rtsp_elements.append(rtsp_mem_caps)
-        if rtsp_rate is not None:
-            rtsp_elements.append(rtsp_rate)
-        if not all(rtsp_elements):
-            missing = [name for name, element in rtsp_factories.items() if element is None]
-            raise RuntimeError(
-                "No se pudieron crear elementos para salida RTSP procesada. "
-                f"Plugins faltantes/no cargables: {', '.join(missing)}"
+        if processed_rtsp_enabled:
+            rtsp_parse = rtsp_factories["h264parse"]
+            rtsp_pay = rtsp_factories["rtph264pay"]
+            rtsp_sink = rtsp_factories["udpsink"]
+            rtsp_elements = [rtsp_queue, rtsp_conv, rtsp_caps, rtsp_encoder, rtsp_parse, rtsp_pay, rtsp_sink]
+            if rtsp_sw_conv is not None:
+                rtsp_elements.append(rtsp_sw_conv)
+            if rtsp_mem_caps is not None:
+                rtsp_elements.append(rtsp_mem_caps)
+            if rtsp_rate is not None:
+                rtsp_elements.append(rtsp_rate)
+            if not all(rtsp_elements):
+                missing = [name for name, element in rtsp_factories.items() if element is None]
+                raise RuntimeError(
+                    "No se pudieron crear elementos para salida RTSP procesada. "
+                    f"Plugins faltantes/no cargables: {', '.join(missing)}"
+                )
+            print(
+                "[INFO] Encoder RTSP seleccionado: "
+                f"{'nvv4l2h264enc (hardware)' if rtsp_uses_hw_encoder else 'x264enc (CPU)'}"
             )
-        print(
-            "[INFO] Encoder RTSP seleccionado: "
-            f"{'nvv4l2h264enc (hardware)' if rtsp_uses_hw_encoder else 'x264enc (CPU)'}"
-        )
 
     pipeline.add(streammux)
 
