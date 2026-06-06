@@ -12,6 +12,7 @@ RUN apt-get update \
         python3-pip \
         python3-gi \
         python3-opencv \
+        libpython3.10 \
         gir1.2-gst-rtsp-server-1.0 \
         gstreamer1.0-tools \
         gstreamer1.0-rtsp \
@@ -34,7 +35,9 @@ RUN curl -fL \
         -o "/tmp/${PYDS_WHEEL}" \
     && (python3 -m pip install --no-cache-dir "/tmp/${PYDS_WHEEL}" \
         || python3 -m pip install --break-system-packages --no-cache-dir "/tmp/${PYDS_WHEEL}") \
-    && rm -f "/tmp/${PYDS_WHEEL}"
+    && rm -f "/tmp/${PYDS_WHEEL}" \
+    && ldconfig \
+    && ldconfig -p | grep -q 'libpython3.10.so.1.0'
 
 COPY . .
 
