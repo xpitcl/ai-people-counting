@@ -38,7 +38,7 @@ sudo apt-get install -y python3-opencv python3-gi
 ./scripts/setup_peoplenet.sh
 ```
 
-El script descarga la versión ONNX podada de PeopleNet en `~/.cache/ai-people-counting/models/peoplenet` y prepara `~/.cache/ai-people-counting/engines` para el engine TensorRT FP16. El primer arranque con DeepStream puede tardar varios minutos porque TensorRT compila el engine; los siguientes arranques deben reutilizarlo.
+El script descarga la versión ONNX podada de PeopleNet y su calibración en `~/.cache/ai-people-counting/models/peoplenet`, y prepara `~/.cache/ai-people-counting/engines` para el engine TensorRT INT8. El workspace de compilación está limitado a 256 MB para evitar agotar la memoria de la Jetson. El primer arranque puede tardar varios minutos; los siguientes deben reutilizar el engine.
 
 2. Edita `config.json`:
 - `settings.mqtt.host`, `port`, credenciales.

@@ -5,8 +5,10 @@ CACHE_ROOT="${CACHE_ROOT:-${HOME}/.cache/ai-people-counting}"
 MODEL_DIR="${CACHE_ROOT}/models/peoplenet"
 ENGINE_DIR="${CACHE_ROOT}/engines"
 MODEL_FILE="${MODEL_DIR}/resnet34_peoplenet_int8.onnx"
+CALIB_FILE="${MODEL_DIR}/resnet34_peoplenet_int8.txt"
 LABELS_FILE="${MODEL_DIR}/labels_peoplenet.txt"
 MODEL_URL="https://api.ngc.nvidia.com/v2/models/nvidia/tao/peoplenet/versions/pruned_quantized_decrypted_v2.3.4/files/resnet34_peoplenet_int8.onnx"
+CALIB_URL="https://api.ngc.nvidia.com/v2/models/nvidia/tao/peoplenet/versions/pruned_quantized_decrypted_v2.3.4/files/resnet34_peoplenet_int8.txt"
 
 mkdir -p "${MODEL_DIR}" "${ENGINE_DIR}"
 
@@ -32,6 +34,15 @@ else
   echo "[INFO] Modelo PeopleNet ya existe: ${MODEL_FILE}"
 fi
 
+if [[ ! -s "${CALIB_FILE}" ]]; then
+  tmp_file="${CALIB_FILE}.tmp"
+  echo "[INFO] Descargando cache de calibracion INT8..."
+  download "${CALIB_URL}" "${tmp_file}"
+  mv "${tmp_file}" "${CALIB_FILE}"
+else
+  echo "[INFO] Calibracion INT8 ya existe: ${CALIB_FILE}"
+fi
+
 cat > "${LABELS_FILE}" <<'EOF'
 person
 bag
@@ -40,6 +51,7 @@ EOF
 
 echo "[OK] PeopleNet listo."
 echo "[OK] Modelo: ${MODEL_FILE}"
+echo "[OK] Calibracion INT8: ${CALIB_FILE}"
 echo "[OK] Labels: ${LABELS_FILE}"
 echo "[OK] Engines: ${ENGINE_DIR}"
 echo "[INFO] El engine TensorRT se generara en el primer arranque de DeepStream."
