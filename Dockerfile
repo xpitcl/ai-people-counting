@@ -32,13 +32,6 @@ COPY . .
 RUN chmod +x scripts/setup_peoplenet.sh scripts/docker-entrypoint.sh \
     && mkdir -p /data "${CACHE_ROOT}/models/peoplenet" "${CACHE_ROOT}/engines"
 
-RUN gst-inspect-1.0 rtspclientsink >/dev/null \
-    && gst-inspect-1.0 h264parse >/dev/null \
-    && gst-inspect-1.0 rtph264pay >/dev/null \
-    && gst-inspect-1.0 rtph264depay >/dev/null \
-    && gst-inspect-1.0 udpsink >/dev/null \
-    && gst-inspect-1.0 x264enc >/dev/null
-
 VOLUME ["/data", "/root/.cache/ai-people-counting"]
 
 ENTRYPOINT ["scripts/docker-entrypoint.sh"]
