@@ -199,7 +199,7 @@ docker run --rm -it \
   -e DISPLAY="$DISPLAY" \
   -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
   -v "$DATA_VOL":/data \
-  --entrypoint python3 \
+  --entrypoint /usr/bin/python3 \
   "$IMAGE" \
   /app/people_counter_jetson.py \
   --config /data/config.json \
@@ -219,7 +219,7 @@ Extrae el `CAMERAS_JSON` actualizado:
 ```bash
 docker run --rm \
   -v "$DATA_VOL":/data \
-  --entrypoint python3 \
+  --entrypoint /usr/bin/python3 \
   "$IMAGE" -c \
   'import json; print(json.dumps(json.load(open("/data/config.json"))["cameras"], separators=(",",":")))'
 ```

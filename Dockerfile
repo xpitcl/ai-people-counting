@@ -16,6 +16,7 @@ RUN apt-get update \
         python3-opencv \
         libpython3.10 \
         libx264-163 \
+        libmp3lame0 \
         gir1.2-gst-rtsp-server-1.0 \
         gstreamer1.0-tools \
         gstreamer1.0-rtsp \
@@ -25,6 +26,7 @@ RUN apt-get update \
         gstreamer1.0-plugins-ugly \
         curl \
         ca-certificates \
+    && /usr/bin/python3 -c "import cv2; print('OpenCV OK:', cv2.__version__)" \
     && rm -rf /var/lib/apt/lists/*
 
 RUN if [ -x /opt/nvidia/deepstream/deepstream/user_additional_install.sh ]; then \
