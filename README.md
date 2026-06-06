@@ -149,7 +149,7 @@ Si `PROCESSED_RTSP_ENABLED=1`, el servicio publica un RTSP H.264 con el mosaico 
 rtsp://IP_DE_LA_JETSON:18554/people-counter
 ```
 
-En Jetson, la salida usa `nvv4l2h264enc` para codificación H.264 por hardware. Si ese plugin no está disponible, se deshabilita únicamente el RTSP procesado para proteger el pipeline CUDA; el conteo y MQTT continúan funcionando. El fallback `x264enc` queda limitado a plataformas no Jetson.
+Jetson Orin Nano no incorpora NVENC. Por eso la salida usa la ruta de software recomendada por NVIDIA: `nvvideoconvert -> I420 en memoria CPU -> x264enc`. En otros modelos Jetson con encoder disponible se prioriza `nvv4l2h264enc`.
 
 Configura siempre las camaras con `CAMERAS_JSON`:
 
