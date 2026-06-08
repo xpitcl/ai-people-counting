@@ -15,6 +15,7 @@ RUN apt-get update \
         python3-gi \
         python3-opencv \
         libpython3.10 \
+        ffmpeg \
         libx264-163 \
         libmp3lame0 \
         gir1.2-gst-rtsp-server-1.0 \
