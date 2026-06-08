@@ -27,8 +27,20 @@ RUN apt-get update \
         gstreamer1.0-plugins-ugly \
         curl \
         ca-certificates \
-    && /usr/bin/python3 -c "import cv2; print('OpenCV OK:', cv2.__version__)" \
     && rm -rf /var/lib/apt/lists/*
+
+RUN /usr/bin/python3 - <<'PY'
+import os
+import sys
+
+try:
+    import cv2
+except Exception as exc:
+    print("[WARN] OpenCV import failed during build:", repr(exc), file=sys.stderr)
+    print("[WARN] Calibration may require installing the missing runtime library in the image.", file=sys.stderr)
+else:
+    print("OpenCV OK:", cv2.__version__)
+PY
 
 RUN if [ -x /opt/nvidia/deepstream/deepstream/user_additional_install.sh ]; then \
         /opt/nvidia/deepstream/deepstream/user_additional_install.sh; \

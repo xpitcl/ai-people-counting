@@ -206,6 +206,16 @@ docker run --rm -it \
   --calibrate
 ```
 
+Si aparece `Falta dependencia: python3-opencv`, diagnostica el import de OpenCV dentro de la imagen desplegada:
+
+```bash
+docker run --rm \
+  --entrypoint /usr/bin/python3 \
+  "$IMAGE" -c 'import cv2; print(cv2.__version__)'
+```
+
+Si el error menciona una libreria `.so` faltante, agrega el paquete APT correspondiente al `Dockerfile`, haz push y redeploy.
+
 Controles:
 - Click izquierdo: marca los dos extremos de la linea.
 - `W/A/S/D`: define la direccion de entrada de la flecha.
