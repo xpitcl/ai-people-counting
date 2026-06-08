@@ -174,6 +174,52 @@ Configura siempre las camaras con `CAMERAS_JSON`:
 
 Cuando el contador esta desplegado con Coolify, ejecuta la calibracion desde una terminal abierta en el escritorio grafico de la Jetson. No la ejecutes desde una sesion SSH sin `DISPLAY`.
 
+### Calibrar sin OpenCV ni X11
+
+Este flujo es el recomendado para despliegues con Coolify. No requiere entrar al contenedor ni abrir ventanas desde Docker.
+
+Captura un frame desde la Jetson usando la misma fuente RTSP que procesa el contador:
+
+```bash
+ffmpeg -y -rtsp_transport tcp \
+  -i rtsp://127.0.0.1:18555/youtube-test \
+  -frames:v 1 -q:v 2 calibration-cam1.jpg
+```
+
+Si la fuente es una camara real, reemplaza la URL por el RTSP de esa camara.
+
+Abre el calibrador en un navegador:
+
+```bash
+open tools/calibrate_line.html
+```
+
+En Linux puedes usar:
+
+```bash
+xdg-open tools/calibrate_line.html
+```
+
+Uso:
+- Carga `calibration-cam1.jpg`.
+- Pega el `CAMERAS_JSON` actual desde Coolify.
+- Ajusta `Ancho objetivo` y `Alto objetivo` a los valores de `settings.source_width` y `settings.source_height` del contador. Por defecto son `1280` y `720`.
+- Click 1: punto inicial de la linea.
+- Click 2: punto final de la linea.
+- Click 3: direccion de entrada de la flecha.
+- Copia el `CAMERAS_JSON` generado.
+- Pega el resultado en la variable `CAMERAS_JSON` de Coolify y haz redeploy del `people-counter`.
+
+Archivo del calibrador:
+
+```text
+tools/calibrate_line.html
+```
+
+### Calibrar con ventana OpenCV
+
+Este flujo queda como alternativa local. Requiere OpenCV funcionando dentro de la imagen y una terminal con `DISPLAY`.
+
 Obtiene el contenedor, la imagen y el volumen persistente usados por Coolify:
 
 ```bash

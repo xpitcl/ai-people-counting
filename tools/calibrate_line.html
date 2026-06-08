@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Calibrar linea de conteo</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Arial, Helvetica, sans-serif;
+      background: #f4f6f8;
+      color: #17202a;
+    }
+    body {
+      margin: 0;
+      padding: 24px;
+    }
+    main {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: grid;
+      gap: 16px;
+    }
+    section {
+      background: #fff;
+      border: 1px solid #d8dee4;
+      border-radius: 8px;
+      padding: 16px;
+    }
+    h1 {
+      font-size: 22px;
+      margin: 0 0 8px;
+    }
+    h2 {
+      font-size: 16px;
+      margin: 0 0 12px;
+    }
+    label {
+      display: block;
+      font-size: 13px;
+      font-weight: 700;
+      margin: 0 0 6px;
+    }
+    input, textarea, select, button {
+      font: inherit;
+      box-sizing: border-box;
+    }
+    input, textarea, select {
+      width: 100%;
+      border: 1px solid #c8d0d8;
+      border-radius: 6px;
+      padding: 8px;
+      background: #fff;
+    }
+    textarea {
+      min-height: 110px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      resize: vertical;
+    }
+    button {
+      border: 1px solid #1f6feb;
+      background: #1f6feb;
+      color: white;
+      border-radius: 6px;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    button.secondary {
+      border-color: #aab4bf;
+      background: #eef2f6;
+      color: #17202a;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .stage-wrap {
+      overflow: auto;
+      border: 1px solid #c8d0d8;
+      border-radius: 6px;
+      background: #111;
+      min-height: 240px;
+    }
+    canvas {
+      display: block;
+      max-width: 100%;
+      height: auto;
+      cursor: crosshair;
+    }
+    .hint {
+      font-size: 13px;
+      color: #4b5563;
+      line-height: 1.45;
+      margin: 6px 0 0;
+    }
+    .status {
+      font-size: 13px;
+      font-weight: 700;
+      color: #0f5132;
+      min-height: 18px;
+    }
+    @media (max-width: 900px) {
+      .grid {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+    @media (max-width: 640px) {
+      body {
+        padding: 12px;
+      }
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <section>
+    <h1>Calibrar linea de conteo</h1>
+    <p class="hint">
+      Carga un frame de la camara, pega el CAMERAS_JSON actual, marca P1, P2 y luego un punto hacia donde apunta la flecha de entrada.
+      El resultado queda escalado a la resolucion objetivo.
+    </p>
+  </section>
+
+  <section>
+    <h2>Entrada</h2>
+    <div class="grid">
+      <div>
+        <label for="imageFile">Frame de la camara</label>
+        <input id="imageFile" type="file" accept="image/*">
+      </div>
+      <div>
+        <label for="cameraIndex">Camara</label>
+        <select id="cameraIndex"></select>
+      </div>
+      <div>
+        <label for="targetWidth">Ancho objetivo</label>
+        <input id="targetWidth" type="number" min="1" value="1280">
+      </div>
+      <div>
+        <label for="targetHeight">Alto objetivo</label>
+        <input id="targetHeight" type="number" min="1" value="720">
+      </div>
+    </div>
+    <label for="camerasJson" style="margin-top: 12px;">CAMERAS_JSON actual</label>
+    <textarea id="camerasJson" spellcheck="false" placeholder='[{"id":"cam_1","uri":"rtsp://...","line":{"id":"cam_1_line_1","p1":[0,0],"p2":[100,0],"in_direction":[0,-1]}}]'></textarea>
+    <div class="actions" style="margin-top: 10px;">
+      <button id="loadJson" type="button">Cargar JSON</button>
+      <button id="resetLine" type="button" class="secondary">Reiniciar linea</button>
+      <button id="undoPoint" type="button" class="secondary">Deshacer punto</button>
+    </div>
+    <p class="hint">Paso 1: click en P1. Paso 2: click en P2. Paso 3: click hacia donde entra la persona.</p>
+  </section>
+
+  <section>
+    <h2>Canvas</h2>
+    <div class="stage-wrap">
+      <canvas id="stage"></canvas>
+    </div>
+    <p id="status" class="status"></p>
+  </section>
+
+  <section>
+    <h2>Resultado</h2>
+    <textarea id="outputJson" spellcheck="false" readonly></textarea>
+    <div class="actions" style="margin-top: 10px;">
+      <button id="copyJson" type="button">Copiar CAMERAS_JSON</button>
+    </div>
+  </section>
+</main>
+
+<script>
+const imageFile = document.getElementById("imageFile");
+const cameraIndex = document.getElementById("cameraIndex");
+const targetWidth = document.getElementById("targetWidth");
+const targetHeight = document.getElementById("targetHeight");
+const camerasJson = document.getElementById("camerasJson");
+const outputJson = document.getElementById("outputJson");
+const loadJson = document.getElementById("loadJson");
+const resetLine = document.getElementById("resetLine");
+const undoPoint = document.getElementById("undoPoint");
+const copyJson = document.getElementById("copyJson");
+const stage = document.getElementById("stage");
+const ctx = stage.getContext("2d");
+const statusEl = document.getElementById("status");
+
+let image = null;
+let cameras = [];
+let points = [];
+let directionPoint = null;
+
+function setStatus(text) {
+  statusEl.textContent = text;
+}
+
+function parseCameras() {
+  const parsed = JSON.parse(camerasJson.value);
+  if (!Array.isArray(parsed)) {
+    throw new Error("CAMERAS_JSON debe ser un arreglo");
+  }
+  cameras = parsed;
+  cameraIndex.innerHTML = "";
+  cameras.forEach((cam, index) => {
+    const option = document.createElement("option");
+    option.value = String(index);
+    option.textContent = `${index}: ${cam.name || cam.id || "camara"}`;
+    cameraIndex.appendChild(option);
+  });
+  loadSelectedCameraLine();
+  setStatus("JSON cargado");
+}
+
+function loadSelectedCameraLine() {
+  points = [];
+  directionPoint = null;
+  const cam = cameras[Number(cameraIndex.value)] || {};
+  const line = cam.line || {};
+  if (Array.isArray(line.p1) && Array.isArray(line.p2)) {
+    points = [fromTarget(line.p1), fromTarget(line.p2)];
+    if (Array.isArray(line.in_direction)) {
+      const mid = midpoint(points[0], points[1]);
+      const vec = [
+        Number(line.in_direction[0]) / scaleX(),
+        Number(line.in_direction[1]) / scaleY()
+      ];
+      directionPoint = [mid[0] + vec[0], mid[1] + vec[1]];
+    }
+  }
+  draw();
+  updateOutput();
+}
+
+function scaleX() {
+  return Number(targetWidth.value || stage.width || 1) / (stage.width || 1);
+}
+
+function scaleY() {
+  return Number(targetHeight.value || stage.height || 1) / (stage.height || 1);
+}
+
+function toTarget(point) {
+  return [
+    Math.round(point[0] * scaleX()),
+    Math.round(point[1] * scaleY())
+  ];
+}
+
+function fromTarget(point) {
+  return [
+    Number(point[0]) / scaleX(),
+    Number(point[1]) / scaleY()
+  ];
+}
+
+function midpoint(a, b) {
+  return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+}
+
+function drawArrow(start, end) {
+  const angle = Math.atan2(end[1] - start[1], end[0] - start[0]);
+  const head = 18;
+  ctx.beginPath();
+  ctx.moveTo(start[0], start[1]);
+  ctx.lineTo(end[0], end[1]);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(end[0], end[1]);
+  ctx.lineTo(end[0] - head * Math.cos(angle - Math.PI / 7), end[1] - head * Math.sin(angle - Math.PI / 7));
+  ctx.lineTo(end[0] - head * Math.cos(angle + Math.PI / 7), end[1] - head * Math.sin(angle + Math.PI / 7));
+  ctx.closePath();
+  ctx.fill();
+}
+
+function draw() {
+  ctx.clearRect(0, 0, stage.width, stage.height);
+  if (image) {
+    ctx.drawImage(image, 0, 0, stage.width, stage.height);
+  } else {
+    ctx.fillStyle = "#222";
+    ctx.fillRect(0, 0, stage.width || 960, stage.height || 540);
+  }
+
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = "#00ff66";
+  ctx.fillStyle = "#00ff66";
+  points.forEach((p, index) => {
+    ctx.beginPath();
+    ctx.arc(p[0], p[1], 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillText(`P${index + 1}`, p[0] + 10, p[1] - 10);
+  });
+  if (points.length === 2) {
+    ctx.beginPath();
+    ctx.moveTo(points[0][0], points[0][1]);
+    ctx.lineTo(points[1][0], points[1][1]);
+    ctx.stroke();
+    const mid = midpoint(points[0], points[1]);
+    const end = directionPoint || [mid[0], mid[1] - 80];
+    ctx.strokeStyle = "#00b7ff";
+    ctx.fillStyle = "#00b7ff";
+    drawArrow(mid, end);
+  }
+}
+
+function updateOutput() {
+  if (!cameras.length || points.length < 2) {
+    outputJson.value = "";
+    return;
+  }
+  const index = Number(cameraIndex.value);
+  const copy = JSON.parse(JSON.stringify(cameras));
+  const cam = copy[index];
+  const existingLine = cam.line || {};
+  const p1 = toTarget(points[0]);
+  const p2 = toTarget(points[1]);
+  const mid = midpoint(points[0], points[1]);
+  const dirEnd = directionPoint || [mid[0], mid[1] - 80];
+  const inDirection = [
+    Math.round((dirEnd[0] - mid[0]) * scaleX()),
+    Math.round((dirEnd[1] - mid[1]) * scaleY())
+  ];
+  cam.line = {
+    id: existingLine.id || `${cam.id || "cam"}_line_1`,
+    p1,
+    p2,
+    in_direction: inDirection
+  };
+  outputJson.value = JSON.stringify(copy);
+}
+
+imageFile.addEventListener("change", () => {
+  const file = imageFile.files[0];
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    image = img;
+    stage.width = img.naturalWidth;
+    stage.height = img.naturalHeight;
+    if (!targetWidth.value) targetWidth.value = String(img.naturalWidth);
+    if (!targetHeight.value) targetHeight.value = String(img.naturalHeight);
+    draw();
+    updateOutput();
+    URL.revokeObjectURL(url);
+    setStatus(`Frame cargado: ${img.naturalWidth}x${img.naturalHeight}`);
+  };
+  img.src = url;
+});
+
+stage.addEventListener("click", event => {
+  const rect = stage.getBoundingClientRect();
+  const x = (event.clientX - rect.left) * (stage.width / rect.width);
+  const y = (event.clientY - rect.top) * (stage.height / rect.height);
+  if (points.length < 2) {
+    points.push([x, y]);
+  } else {
+    directionPoint = [x, y];
+  }
+  draw();
+  updateOutput();
+});
+
+loadJson.addEventListener("click", () => {
+  try {
+    parseCameras();
+  } catch (err) {
+    setStatus(`Error: ${err.message}`);
+  }
+});
+
+cameraIndex.addEventListener("change", loadSelectedCameraLine);
+targetWidth.addEventListener("input", updateOutput);
+targetHeight.addEventListener("input", updateOutput);
+
+resetLine.addEventListener("click", () => {
+  points = [];
+  directionPoint = null;
+  draw();
+  updateOutput();
+});
+
+undoPoint.addEventListener("click", () => {
+  if (directionPoint) {
+    directionPoint = null;
+  } else {
+    points.pop();
+  }
+  draw();
+  updateOutput();
+});
+
+copyJson.addEventListener("click", async () => {
+  if (!outputJson.value) return;
+  await navigator.clipboard.writeText(outputJson.value);
+  setStatus("CAMERAS_JSON copiado");
+});
+
+stage.width = 960;
+stage.height = 540;
+draw();
+</script>
+</body>
+</html>
