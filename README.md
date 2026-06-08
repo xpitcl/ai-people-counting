@@ -214,6 +214,14 @@ docker run --rm \
   "$IMAGE" -c 'import cv2; print(cv2.__version__)'
 ```
 
+Para listar librerias dinamicas faltantes:
+
+```bash
+docker run --rm \
+  --entrypoint bash \
+  "$IMAGE" -lc 'ldd /usr/lib/python3/dist-packages/cv2*.so | grep "not found" || true'
+```
+
 Si el error menciona una libreria `.so` faltante, agrega el paquete APT correspondiente al `Dockerfile`, haz push y redeploy.
 
 Controles:

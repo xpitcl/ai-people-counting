@@ -44,8 +44,10 @@ from typing import Dict, List, Optional, Tuple
 
 try:
     import cv2
-except Exception:
+    CV2_IMPORT_ERROR = None
+except Exception as exc:
     cv2 = None
+    CV2_IMPORT_ERROR = exc
 
 try:
     import paho.mqtt.client as mqtt
@@ -734,7 +736,7 @@ def draw_line_ui(frame, cam_label: str, initial_line: dict) -> Optional[dict]:
 
 def calibrate_lines(store: ConfigStore) -> None:
     if cv2 is None:
-        raise RuntimeError("Falta dependencia: python3-opencv")
+        raise RuntimeError(f"Falta dependencia: python3-opencv ({CV2_IMPORT_ERROR!r})")
 
     cams = store.data.get("cameras", [])
     if not cams:
