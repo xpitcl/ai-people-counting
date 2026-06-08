@@ -206,6 +206,26 @@ docker run --rm -it \
   --calibrate
 ```
 
+Si OpenCV falla por `libmp3lame.so.0`, usa este comando alternativo. Regenera el linker cache dentro del contenedor temporal antes de iniciar la calibracion:
+
+```bash
+docker run --rm -it \
+  --network host \
+  --runtime nvidia \
+  --privileged \
+  -e DISPLAY="$DISPLAY" \
+  -e LD_LIBRARY_PATH=/usr/lib:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu/nvidia \
+  -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
+  -v "$DATA_VOL":/data \
+  --entrypoint bash \
+  "$IMAGE" -lc '\
+    printf "%s\n" /usr/lib /usr/lib/aarch64-linux-gnu /lib/aarch64-linux-gnu /usr/lib/aarch64-linux-gnu/nvidia > /etc/ld.so.conf.d/ai-people-counting-aarch64.conf; \
+    lame_lib=$(find /usr/lib /lib -name "libmp3lame.so.0*" 2>/dev/null | head -n 1 || true); \
+    if [ -n "$lame_lib" ] && [ ! -e /usr/lib/libmp3lame.so.0 ]; then ln -s "$lame_lib" /usr/lib/libmp3lame.so.0; fi; \
+    ldconfig || true; \
+    /usr/bin/python3 /app/people_counter_jetson.py --config /data/config.json --calibrate'
+```
+
 Si aparece `Falta dependencia: python3-opencv`, diagnostica el import de OpenCV dentro de la imagen desplegada:
 
 ```bash

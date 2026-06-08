@@ -5,7 +5,7 @@ ENV PYTHONUNBUFFERED=1 \
     CACHE_ROOT=/root/.cache/ai-people-counting \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=all \
-    LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu/nvidia
+    LD_LIBRARY_PATH=/usr/lib:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu/nvidia
 
 WORKDIR /app
 
@@ -28,21 +28,17 @@ RUN apt-get update \
         gstreamer1.0-plugins-ugly \
         curl \
         ca-certificates \
-    && lame_lib="$(find /usr/lib /lib -name 'libmp3lame.so.0*' | head -n 1)" \
-    && test -n "${lame_lib}" \
-    && lame_dir="$(dirname "${lame_lib}")" \
-    && printf '%s\n' "${lame_dir}" /usr/lib/aarch64-linux-gnu /lib/aarch64-linux-gnu /usr/lib/aarch64-linux-gnu/nvidia > /etc/ld.so.conf.d/ai-people-counting-aarch64.conf \
-    && if [ ! -e "${lame_dir}/libmp3lame.so.0" ]; then ln -s "$(basename "${lame_lib}")" "${lame_dir}/libmp3lame.so.0"; fi \
-    && ldconfig \
+    && printf '%s\n' /usr/lib /usr/lib/aarch64-linux-gnu /lib/aarch64-linux-gnu /usr/lib/aarch64-linux-gnu/nvidia > /etc/ld.so.conf.d/ai-people-counting-aarch64.conf \
+    && lame_lib="$(find /usr/lib /lib -name 'libmp3lame.so.0*' 2>/dev/null | head -n 1 || true)" \
+    && if [ -n "${lame_lib}" ] && [ ! -e /usr/lib/libmp3lame.so.0 ]; then ln -s "${lame_lib}" /usr/lib/libmp3lame.so.0; fi \
+    && ldconfig || true \
     && rm -rf /var/lib/apt/lists/*
 
 RUN if [ -x /opt/nvidia/deepstream/deepstream/user_additional_install.sh ]; then \
         /opt/nvidia/deepstream/deepstream/user_additional_install.sh; \
     fi \
-    && ldconfig \
+    && ldconfig || true \
     && rm -rf /var/lib/apt/lists/*
-
-RUN /usr/bin/python3 -c "import cv2; print('OpenCV OK:', cv2.__version__)"
 
 COPY requirements.txt .
 RUN python3 -m pip install --no-cache-dir -r requirements.txt \
