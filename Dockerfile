@@ -4,7 +4,8 @@ ENV PYTHONUNBUFFERED=1 \
     APP_DIR=/app \
     CACHE_ROOT=/root/.cache/ai-people-counting \
     NVIDIA_VISIBLE_DEVICES=all \
-    NVIDIA_DRIVER_CAPABILITIES=all
+    NVIDIA_DRIVER_CAPABILITIES=all \
+    LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu/nvidia
 
 WORKDIR /app
 
@@ -27,25 +28,19 @@ RUN apt-get update \
         gstreamer1.0-plugins-ugly \
         curl \
         ca-certificates \
+    && printf '%s\n' /usr/lib/aarch64-linux-gnu /lib/aarch64-linux-gnu /usr/lib/aarch64-linux-gnu/nvidia > /etc/ld.so.conf.d/ai-people-counting-aarch64.conf \
+    && dpkg -L libmp3lame0 | grep 'libmp3lame.so.0' \
+    && ldconfig \
+    && ldconfig -p | grep -q 'libmp3lame.so.0' \
     && rm -rf /var/lib/apt/lists/*
-
-RUN /usr/bin/python3 - <<'PY'
-import os
-import sys
-
-try:
-    import cv2
-except Exception as exc:
-    print("[WARN] OpenCV import failed during build:", repr(exc), file=sys.stderr)
-    print("[WARN] Calibration may require installing the missing runtime library in the image.", file=sys.stderr)
-else:
-    print("OpenCV OK:", cv2.__version__)
-PY
 
 RUN if [ -x /opt/nvidia/deepstream/deepstream/user_additional_install.sh ]; then \
         /opt/nvidia/deepstream/deepstream/user_additional_install.sh; \
     fi \
+    && ldconfig \
     && rm -rf /var/lib/apt/lists/*
+
+RUN /usr/bin/python3 -c "import cv2; print('OpenCV OK:', cv2.__version__)"
 
 COPY requirements.txt .
 RUN python3 -m pip install --no-cache-dir -r requirements.txt \
@@ -60,6 +55,7 @@ RUN curl -fL \
         || python3 -m pip install --break-system-packages --no-cache-dir "/tmp/${PYDS_WHEEL}") \
     && rm -f "/tmp/${PYDS_WHEEL}" \
     && ldconfig \
+    && ldconfig -p | grep -q 'libmp3lame.so.0' \
     && ldconfig -p | grep -q 'libpython3.10.so.1.0'
 
 COPY . .
