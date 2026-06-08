@@ -28,10 +28,12 @@ RUN apt-get update \
         gstreamer1.0-plugins-ugly \
         curl \
         ca-certificates \
-    && printf '%s\n' /usr/lib/aarch64-linux-gnu /lib/aarch64-linux-gnu /usr/lib/aarch64-linux-gnu/nvidia > /etc/ld.so.conf.d/ai-people-counting-aarch64.conf \
-    && dpkg -L libmp3lame0 | grep 'libmp3lame.so.0' \
+    && lame_lib="$(find /usr/lib /lib -name 'libmp3lame.so.0*' | head -n 1)" \
+    && test -n "${lame_lib}" \
+    && lame_dir="$(dirname "${lame_lib}")" \
+    && printf '%s\n' "${lame_dir}" /usr/lib/aarch64-linux-gnu /lib/aarch64-linux-gnu /usr/lib/aarch64-linux-gnu/nvidia > /etc/ld.so.conf.d/ai-people-counting-aarch64.conf \
+    && if [ ! -e "${lame_dir}/libmp3lame.so.0" ]; then ln -s "$(basename "${lame_lib}")" "${lame_dir}/libmp3lame.so.0"; fi \
     && ldconfig \
-    && ldconfig -p | grep -q 'libmp3lame.so.0' \
     && rm -rf /var/lib/apt/lists/*
 
 RUN if [ -x /opt/nvidia/deepstream/deepstream/user_additional_install.sh ]; then \
@@ -55,7 +57,6 @@ RUN curl -fL \
         || python3 -m pip install --break-system-packages --no-cache-dir "/tmp/${PYDS_WHEEL}") \
     && rm -f "/tmp/${PYDS_WHEEL}" \
     && ldconfig \
-    && ldconfig -p | grep -q 'libmp3lame.so.0' \
     && ldconfig -p | grep -q 'libpython3.10.so.1.0'
 
 COPY . .

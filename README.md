@@ -227,7 +227,7 @@ Para diagnosticar `libmp3lame` especificamente:
 ```bash
 docker run --rm \
   --entrypoint bash \
-  "$IMAGE" -lc 'dpkg -L libmp3lame0 | grep libmp3lame.so.0; ldconfig -p | grep libmp3lame || true; echo "$LD_LIBRARY_PATH"'
+  "$IMAGE" -lc 'find /usr/lib /lib -name "libmp3lame.so.0*" -print; ldconfig -p | grep libmp3lame || true; echo "$LD_LIBRARY_PATH"; /usr/bin/python3 -c "import cv2; print(cv2.__version__)"'
 ```
 
 Si el error menciona una libreria `.so` faltante, agrega el paquete APT correspondiente al `Dockerfile`, haz push y redeploy.
