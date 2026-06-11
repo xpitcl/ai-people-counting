@@ -27,7 +27,9 @@ Usage:
 """
 
 import argparse
+import base64
 import datetime as dt
+import hashlib
 import json
 import math
 import os
@@ -38,6 +40,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import urllib.request
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -63,6 +66,7 @@ pyds = None
 
 DEFAULT_PEOPLENET_PGIE_CONFIG = "configs/deepstream/config_infer_primary_peoplenet.txt"
 PIPELINE_SHUTDOWN_TIMEOUT_SEC = 15
+DEFAULT_RTSP_STARTUP_WAIT_SEC = 60
 
 
 def utc_now_iso() -> str:
@@ -82,6 +86,159 @@ def atomic_write_json(path: Path, data: dict) -> None:
     with tmp.open("w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=True)
     os.replace(tmp, path)
+
+
+def sanitized_stream_uri(uri: str) -> str:
+    parsed = urllib.parse.urlsplit(uri)
+    if not parsed.username and not parsed.password:
+        return uri
+    host = parsed.hostname or ""
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    return urllib.parse.urlunsplit((parsed.scheme, host, parsed.path, parsed.query, parsed.fragment))
+
+
+def _rtsp_request(uri: str, authorization: Optional[str], timeout_sec: float) -> Tuple[int, dict]:
+    parsed = urllib.parse.urlsplit(uri)
+    host = parsed.hostname or ""
+    port = parsed.port or 554
+    request_uri = urllib.parse.urlunsplit(
+        (parsed.scheme, f"{host}:{port}", parsed.path or "/", parsed.query, "")
+    )
+    headers = [
+        f"DESCRIBE {request_uri} RTSP/1.0",
+        "CSeq: 1",
+        "User-Agent: ai-people-counting/1.0",
+        "Accept: application/sdp",
+    ]
+    if authorization:
+        headers.append(f"Authorization: {authorization}")
+    request = ("\r\n".join(headers) + "\r\n\r\n").encode("ascii")
+
+    with socket.create_connection((host, port), timeout=timeout_sec) as sock:
+        sock.settimeout(timeout_sec)
+        sock.sendall(request)
+        response = bytearray()
+        while b"\r\n\r\n" not in response and len(response) < 65536:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            response.extend(chunk)
+
+    header_text = bytes(response).split(b"\r\n\r\n", 1)[0].decode("iso-8859-1", errors="replace")
+    lines = header_text.split("\r\n")
+    if not lines or not lines[0].startswith("RTSP/"):
+        return 0, {}
+    parts = lines[0].split()
+    status = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 0
+    response_headers = {}
+    for line in lines[1:]:
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        response_headers[key.strip().lower()] = value.strip()
+    return status, response_headers
+
+
+def _rtsp_authorization(uri: str, challenge: str) -> Optional[str]:
+    parsed = urllib.parse.urlsplit(uri)
+    username = urllib.parse.unquote(parsed.username or "")
+    password = urllib.parse.unquote(parsed.password or "")
+    if not username:
+        return None
+
+    scheme, _, params_text = challenge.partition(" ")
+    if scheme.lower() == "basic":
+        token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+        return f"Basic {token}"
+    if scheme.lower() != "digest":
+        return None
+
+    params = urllib.request.parse_keqv_list(urllib.request.parse_http_list(params_text))
+    realm = params.get("realm", "")
+    nonce = params.get("nonce", "")
+    algorithm = params.get("algorithm", "MD5").upper()
+    if not realm or not nonce or algorithm != "MD5":
+        return None
+
+    host = parsed.hostname or ""
+    port = parsed.port or 554
+    request_uri = urllib.parse.urlunsplit(
+        (parsed.scheme, f"{host}:{port}", parsed.path or "/", parsed.query, "")
+    )
+    ha1 = hashlib.md5(f"{username}:{realm}:{password}".encode("utf-8")).hexdigest()
+    ha2 = hashlib.md5(f"DESCRIBE:{request_uri}".encode("utf-8")).hexdigest()
+    qop_options = [value.strip() for value in params.get("qop", "").split(",") if value.strip()]
+    fields = [
+        f'username="{username}"',
+        f'realm="{realm}"',
+        f'nonce="{nonce}"',
+        f'uri="{request_uri}"',
+    ]
+    if "auth" in qop_options:
+        nc = "00000001"
+        cnonce = uuid.uuid4().hex
+        response = hashlib.md5(
+            f"{ha1}:{nonce}:{nc}:{cnonce}:auth:{ha2}".encode("utf-8")
+        ).hexdigest()
+        fields.extend([f"response=\"{response}\"", "qop=auth", f"nc={nc}", f'cnonce="{cnonce}"'])
+    else:
+        response = hashlib.md5(f"{ha1}:{nonce}:{ha2}".encode("utf-8")).hexdigest()
+        fields.append(f'response="{response}"')
+    if params.get("opaque"):
+        fields.append(f'opaque="{params["opaque"]}"')
+    return "Digest " + ", ".join(fields)
+
+
+def rtsp_source_available(uri: str, timeout_sec: float) -> bool:
+    try:
+        status, headers = _rtsp_request(uri, None, timeout_sec)
+        if status == 200:
+            return True
+        if status != 401:
+            return False
+        authorization = _rtsp_authorization(uri, headers.get("www-authenticate", ""))
+        if not authorization:
+            return False
+        status, _ = _rtsp_request(uri, authorization, timeout_sec)
+        return status == 200
+    except (OSError, ValueError):
+        return False
+
+
+def wait_for_rtsp_sources(cameras: List[dict], timeout_sec: int) -> bool:
+    pending = {
+        str(cam.get("id") or index): str(cam.get("uri") or "")
+        for index, cam in enumerate(cameras)
+        if str(cam.get("uri") or "").lower().startswith("rtsp://")
+    }
+    if not pending or timeout_sec <= 0:
+        return True
+
+    deadline = time.monotonic() + timeout_sec
+    announced = False
+    while pending and time.monotonic() < deadline:
+        for cam_id, uri in list(pending.items()):
+            remaining = max(deadline - time.monotonic(), 0.1)
+            if rtsp_source_available(uri, min(3.0, remaining)):
+                print(f"[INFO] Fuente RTSP disponible: {cam_id} ({sanitized_stream_uri(uri)})")
+                del pending[cam_id]
+
+        if pending:
+            if not announced:
+                waiting = ", ".join(sorted(pending))
+                print(
+                    f"[INFO] Esperando fuentes RTSP antes de iniciar DeepStream "
+                    f"(timeout={timeout_sec}s): {waiting}"
+                )
+                announced = True
+            time.sleep(min(2.0, max(deadline - time.monotonic(), 0.0)))
+
+    if pending:
+        waiting = ", ".join(sorted(pending))
+        print(f"[ERROR] Fuentes RTSP no disponibles despues de {timeout_sec}s: {waiting}")
+        return False
+    return True
 
 
 def first_existing_path(candidates: List[str]) -> Optional[str]:
@@ -1643,7 +1800,7 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
     rtsp_clients = []
     rtsp_udp_port = 5400
     rtsp_elements = []
-    rtsp_queue = rtsp_conv = rtsp_caps = rtsp_encoder = None
+    rtsp_queue = rtsp_conv = rtsp_rate = rtsp_caps = rtsp_rate_caps = rtsp_encoder = None
     rtsp_parse = rtsp_pay = rtsp_sink = None
     rtsp_uses_hw_encoder = False
     if processed_rtsp_enabled:
@@ -1665,12 +1822,20 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
         rtsp_encoder = rtsp_factories["nvv4l2h264enc"]
         rtsp_uses_hw_encoder = rtsp_encoder is not None
         if not rtsp_uses_hw_encoder:
+            rtsp_factories["videorate"] = Gst.ElementFactory.make("videorate", "rtsp-video-rate")
+            rtsp_factories["rate-capsfilter"] = Gst.ElementFactory.make("capsfilter", "rtsp-rate-caps")
             rtsp_factories["x264enc"] = Gst.ElementFactory.make("x264enc", "rtsp-h264-enc")
+            rtsp_rate = rtsp_factories["videorate"]
+            rtsp_rate_caps = rtsp_factories["rate-capsfilter"]
             rtsp_encoder = rtsp_factories["x264enc"]
         rtsp_parse = rtsp_factories["h264parse"]
         rtsp_pay = rtsp_factories["rtph264pay"]
         rtsp_sink = rtsp_factories["udpsink"]
-        rtsp_elements = [rtsp_queue, rtsp_conv, rtsp_caps, rtsp_encoder, rtsp_parse, rtsp_pay, rtsp_sink]
+        rtsp_elements = [rtsp_queue, rtsp_conv]
+        rtsp_elements.append(rtsp_caps)
+        if rtsp_rate is not None:
+            rtsp_elements.extend([rtsp_rate, rtsp_rate_caps])
+        rtsp_elements.extend([rtsp_encoder, rtsp_parse, rtsp_pay, rtsp_sink])
         if not all(rtsp_elements):
             missing = [name for name, element in rtsp_factories.items() if element is None]
             raise RuntimeError(
@@ -1820,6 +1985,9 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
         rtsp_fps = max(int(processed_rtsp_cfg.get("fps", 5)), 1)
         rtsp_bitrate = max(int(processed_rtsp_cfg.get("bitrate", 1_000_000)), 1)
         _set_if_prop_exists(rtsp_conv, "copy-hw", 2)
+        if rtsp_rate is not None:
+            _set_if_prop_exists(rtsp_rate, "drop-only", True)
+            _set_if_prop_exists(rtsp_rate, "max-rate", rtsp_fps)
         rtsp_caps.set_property(
             "caps",
             Gst.Caps.from_string(
@@ -1832,6 +2000,11 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
                 )
             ),
         )
+        if rtsp_rate_caps is not None:
+            rtsp_rate_caps.set_property(
+                "caps",
+                Gst.Caps.from_string(f"video/x-raw, framerate={rtsp_fps}/1"),
+            )
         if rtsp_uses_hw_encoder:
             _set_if_prop_exists(rtsp_encoder, "bitrate", rtsp_bitrate)
             _set_if_prop_exists(rtsp_encoder, "insert-sps-pps", True)
@@ -1848,12 +2021,24 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
         _set_if_prop_exists(rtsp_pay, "config-interval", 1)
         rtsp_sink.set_property("host", "127.0.0.1")
         rtsp_sink.set_property("port", rtsp_udp_port)
-        rtsp_sink.set_property("sync", False)
+        rtsp_sink.set_property("sync", True)
         rtsp_sink.set_property("async", False)
+        _set_if_prop_exists(rtsp_sink, "qos", True)
+        _set_if_prop_exists(rtsp_sink, "max-lateness", 200 * Gst.MSECOND)
         if rtsp_uses_hw_encoder:
             _link_elements_or_raise(rtsp_queue, rtsp_conv, rtsp_caps, rtsp_encoder, rtsp_parse, rtsp_pay, rtsp_sink)
         else:
-            _link_elements_or_raise(rtsp_queue, rtsp_conv, rtsp_caps, rtsp_encoder, rtsp_parse, rtsp_pay, rtsp_sink)
+            _link_elements_or_raise(
+                rtsp_queue,
+                rtsp_conv,
+                rtsp_caps,
+                rtsp_rate,
+                rtsp_rate_caps,
+                rtsp_encoder,
+                rtsp_parse,
+                rtsp_pay,
+                rtsp_sink,
+            )
 
         rtp_probe_state = {"logged": False}
 
@@ -1896,7 +2081,7 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
             )
         print(
             f"[INFO] RTSP procesado activo: rtsp://0.0.0.0:{rtsp_service}{rtsp_mount} "
-            f"({rtsp_width}x{rtsp_height}, bitrate={rtsp_bitrate}, "
+            f"({rtsp_width}x{rtsp_height}, fps={rtsp_fps}, bitrate={rtsp_bitrate}, "
             f"keyframe_interval={rtsp_fps}, "
             f"encoder={'nvv4l2h264enc' if rtsp_uses_hw_encoder else 'x264enc'})"
         )
@@ -1905,11 +2090,38 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
     if sink_pad is None:
         raise RuntimeError("No se pudo obtener tracker src pad")
 
+    processing_fps = {
+        str(cam["id"]): {
+            "window_started": time.monotonic(),
+            "frames": 0,
+            "value": 0.0,
+        }
+        for cam in cameras
+    }
+
+    def update_processing_fps(cam_id: str) -> float:
+        state = processing_fps[cam_id]
+        state["frames"] += 1
+        now = time.monotonic()
+        elapsed = now - state["window_started"]
+        if elapsed >= 1.0:
+            state["value"] = state["frames"] / elapsed
+            state["frames"] = 0
+            state["window_started"] = now
+        return state["value"]
+
     def add_overlay(frame_meta, batch_meta, cam):
         cam_id = str(cam["id"])
         t = core.get_totals(cam_id)
         inside = int(t["in"]) - int(t["out"])
-        text = f"{cam.get('name', cam_id)} | In:{int(t['in'])} Out:{int(t['out'])} Inside:{inside}"
+        current_fps = update_processing_fps(cam_id)
+        fps_text = f"FPS:{current_fps:.1f}"
+        if processed_rtsp_enabled:
+            fps_text += f" Out:{rtsp_fps}"
+        text = (
+            f"{cam.get('name', cam_id)} | {fps_text} | "
+            f"In:{int(t['in'])} Out:{int(t['out'])} Inside:{inside}"
+        )
         line = cam.get("line", {})
         p1 = line.get("p1", [100, 100])
         p2 = line.get("p2", [400, 100])
@@ -2146,6 +2358,12 @@ def main():
     if backend == "opencv":
         run_counter_opencv(store, no_display=args.no_display)
     else:
+        startup_wait_sec = max(
+            int(os.environ.get("RTSP_STARTUP_WAIT_SEC", DEFAULT_RTSP_STARTUP_WAIT_SEC)),
+            0,
+        )
+        if not wait_for_rtsp_sources(store.data.get("cameras", []), startup_wait_sec):
+            return 1
         retry_delay_sec = 10
         restart_reason = run_counter(store, no_display=args.no_display)
         if restart_reason:

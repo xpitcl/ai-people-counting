@@ -129,6 +129,7 @@ INTERVAL_SEC=60
 BACKEND=deepstream
 NO_DISPLAY=1
 SETUP_PEOPLENET=1
+RTSP_STARTUP_WAIT_SEC=60
 CONFIG_OVERWRITE=0
 CONFIG_PRESERVE_STATE=1
 MQTT_QOS=1
@@ -143,13 +144,15 @@ PROCESSED_RTSP_FPS=5
 PROCESSED_RTSP_BITRATE=1000000
 ```
 
+`RTSP_STARTUP_WAIT_SEC` evita iniciar CUDA/GStreamer mientras una fuente RTSP aun no publica. Esto elimina reinicios innecesarios cuando MediaMTX y el restreamer se recuperan con algunos segundos de diferencia.
+
 Si `PROCESSED_RTSP_ENABLED=1`, el servicio publica un RTSP H.264 con el mosaico procesado después de `nvosd`. Si hay 4 cámaras, verás una grilla 2x2 con overlays; si hay una sola cámara, verás esa cámara completa. La URL externa normalmente será:
 
 ```text
 rtsp://IP_DE_LA_JETSON:18554/people-counter
 ```
 
-Jetson Orin Nano no incorpora NVENC. Por eso la salida usa la ruta de software recomendada por NVIDIA: `nvvideoconvert -> I420 en memoria CPU -> x264enc`. En otros modelos Jetson con encoder disponible se prioriza `nvv4l2h264enc`.
+Jetson Orin Nano no incorpora NVENC. Por eso la salida usa la ruta de software `nvvideoconvert -> I420 en memoria CPU -> videorate -> x264enc`. `PROCESSED_RTSP_FPS` limita realmente los frames codificados y descarta frames atrasados para evitar acumulacion de latencia. La salida RTP se sincroniza con el reloj y descarta buffers con mas de 200 ms de atraso, evitando pausas seguidas de reproduccion acelerada. El overlay muestra `FPS` (frames procesados por DeepStream) y `Out` (FPS configurados para el RTSP). En otros modelos Jetson con encoder disponible se prioriza `nvv4l2h264enc`.
 
 Configura siempre las camaras con `CAMERAS_JSON`:
 

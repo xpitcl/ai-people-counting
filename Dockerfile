@@ -31,13 +31,19 @@ RUN apt-get update \
     && printf '%s\n' /usr/lib /usr/lib/aarch64-linux-gnu /lib/aarch64-linux-gnu /usr/lib/aarch64-linux-gnu/nvidia > /etc/ld.so.conf.d/ai-people-counting-aarch64.conf \
     && lame_lib="$(find /usr/lib /lib -name 'libmp3lame.so.0*' 2>/dev/null | head -n 1 || true)" \
     && if [ -n "${lame_lib}" ] && [ ! -e /usr/lib/libmp3lame.so.0 ]; then ln -s "${lame_lib}" /usr/lib/libmp3lame.so.0; fi \
-    && ldconfig || true \
+    && (ldconfig || true) \
     && rm -rf /var/lib/apt/lists/*
 
 RUN if [ -x /opt/nvidia/deepstream/deepstream/user_additional_install.sh ]; then \
         /opt/nvidia/deepstream/deepstream/user_additional_install.sh; \
     fi \
-    && ldconfig || true \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends --reinstall \
+        libflac8 \
+        libmp3lame0 \
+        libxvidcore4 \
+    && ldconfig \
+    && ffprobe -version >/dev/null \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
