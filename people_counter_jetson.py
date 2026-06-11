@@ -62,6 +62,7 @@ except Exception:
 pyds = None
 
 DEFAULT_PEOPLENET_PGIE_CONFIG = "configs/deepstream/config_infer_primary_peoplenet.txt"
+PIPELINE_SHUTDOWN_TIMEOUT_SEC = 15
 
 
 def utc_now_iso() -> str:
@@ -346,15 +347,24 @@ class MQTTPublisher:
         with self.lock:
             if not self.connected or self.client is None:
                 return False
-            info = self.client.publish(topic, body, qos=qos, retain=retain)
-        ok = info.rc == mqtt.MQTT_ERR_SUCCESS
-        if ok:
             try:
-                info.wait_for_publish(timeout=2.0)
-            except Exception:
+                info = self.client.publish(topic, body, qos=qos, retain=retain)
+            except Exception as exc:
+                print(f"[MQTT][WARN] Fallo publicando en {topic}: {exc}")
                 return False
-            print(f"[MQTT][SENT] topic={topic} msg={body}")
-        return ok
+        if info.rc != mqtt.MQTT_ERR_SUCCESS:
+            print(f"[MQTT][WARN] publish() rechazo el mensaje en {topic}: rc={info.rc}")
+            return False
+        try:
+            info.wait_for_publish(timeout=2.0)
+        except Exception as exc:
+            print(f"[MQTT][WARN] Sin confirmacion de publicacion en {topic}: {exc}")
+            return False
+        if not info.is_published():
+            print(f"[MQTT][WARN] Timeout esperando confirmacion de publicacion en {topic}")
+            return False
+        print(f"[MQTT][SENT] topic={topic} msg={body}")
+        return True
 
     def enqueue_pending(self, message: dict) -> None:
         normalized = self._normalize_message(message)
@@ -928,6 +938,27 @@ def bus_call(bus, message, loop, runtime_state):
         err, dbg = message.parse_warning()
         print(f"[WARN] {err}: {dbg}")
     return True
+
+
+def start_shutdown_watchdog(timeout_sec: int = PIPELINE_SHUTDOWN_TIMEOUT_SEC) -> threading.Event:
+    completed = threading.Event()
+
+    def force_exit_if_stuck() -> None:
+        if completed.wait(timeout_sec):
+            return
+        print(
+            "[ERROR] Timeout deteniendo GStreamer; se forzara la salida "
+            "para que Docker reinicie el contenedor.",
+            flush=True,
+        )
+        os._exit(1)
+
+    threading.Thread(
+        target=force_exit_if_stuck,
+        name="pipeline-shutdown-watchdog",
+        daemon=True,
+    ).start()
+    return completed
 
 
 def _read_pgie_key(config_path: str, key: str) -> Optional[str]:
@@ -2032,6 +2063,7 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
     except KeyboardInterrupt:
         print("Deteniendo por teclado...")
     finally:
+        shutdown_watchdog = None
         try:
             with store.lock:
                 messages = core.build_interval_messages()
@@ -2043,6 +2075,8 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
                 store.save()
         except Exception:
             pass
+        if runtime_state["restart_reason"]:
+            shutdown_watchdog = start_shutdown_watchdog()
         if interval_source_id:
             GLib.source_remove(interval_source_id)
         if bus_handler_id:
@@ -2064,6 +2098,8 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
         elif state_result == Gst.StateChangeReturn.ASYNC:
             print("[WARN] Timeout esperando que el pipeline llegue a estado NULL; se continuara el reinicio.")
         mqtt_pub.stop()
+        if shutdown_watchdog is not None:
+            shutdown_watchdog.set()
     return runtime_state["restart_reason"]
 
 
