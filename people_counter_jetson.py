@@ -66,7 +66,10 @@ pyds = None
 
 DEFAULT_PEOPLENET_PGIE_CONFIG = "configs/deepstream/config_infer_primary_peoplenet.txt"
 PIPELINE_SHUTDOWN_TIMEOUT_SEC = 15
-DEFAULT_RTSP_STARTUP_WAIT_SEC = 60
+DEFAULT_RTSP_STARTUP_WAIT_SEC = -1
+DEFAULT_DEEPSTREAM_WATCHDOG_INITIAL_GRACE_SEC = 600
+DEFAULT_DEEPSTREAM_WATCHDOG_STALL_SEC = 120
+DEFAULT_DEEPSTREAM_WATCHDOG_CHECK_INTERVAL_SEC = 10
 
 
 def utc_now_iso() -> str:
@@ -212,14 +215,15 @@ def wait_for_rtsp_sources(cameras: List[dict], timeout_sec: int) -> bool:
         for index, cam in enumerate(cameras)
         if str(cam.get("uri") or "").lower().startswith("rtsp://")
     }
-    if not pending or timeout_sec <= 0:
+    if not pending or timeout_sec == 0:
         return True
 
-    deadline = time.monotonic() + timeout_sec
+    wait_forever = timeout_sec < 0
+    deadline = None if wait_forever else time.monotonic() + timeout_sec
     announced = False
-    while pending and time.monotonic() < deadline:
+    while pending and (wait_forever or time.monotonic() < float(deadline)):
         for cam_id, uri in list(pending.items()):
-            remaining = max(deadline - time.monotonic(), 0.1)
+            remaining = 3.0 if wait_forever else max(float(deadline) - time.monotonic(), 0.1)
             if rtsp_source_available(uri, min(3.0, remaining)):
                 print(f"[INFO] Fuente RTSP disponible: {cam_id} ({sanitized_stream_uri(uri)})")
                 del pending[cam_id]
@@ -227,12 +231,14 @@ def wait_for_rtsp_sources(cameras: List[dict], timeout_sec: int) -> bool:
         if pending:
             if not announced:
                 waiting = ", ".join(sorted(pending))
+                timeout_label = "sin timeout" if wait_forever else f"timeout={timeout_sec}s"
                 print(
                     f"[INFO] Esperando fuentes RTSP antes de iniciar DeepStream "
-                    f"(timeout={timeout_sec}s): {waiting}"
+                    f"({timeout_label}): {waiting}"
                 )
                 announced = True
-            time.sleep(min(2.0, max(deadline - time.monotonic(), 0.0)))
+            sleep_sec = 2.0 if wait_forever else min(2.0, max(float(deadline) - time.monotonic(), 0.0))
+            time.sleep(sleep_sec)
 
     if pending:
         waiting = ", ".join(sorted(pending))
@@ -308,6 +314,12 @@ def default_config() -> dict:
                 "ll-config-file": "/opt/nvidia/deepstream/deepstream-7.1/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml",
                 "enable-batch-process": 1,
                 "enable-past-frame": 0,
+            },
+            "watchdog": {
+                "enabled": True,
+                "initial_grace_sec": DEFAULT_DEEPSTREAM_WATCHDOG_INITIAL_GRACE_SEC,
+                "stall_sec": DEFAULT_DEEPSTREAM_WATCHDOG_STALL_SEC,
+                "check_interval_sec": DEFAULT_DEEPSTREAM_WATCHDOG_CHECK_INTERVAL_SEC,
             },
         },
         "cameras": [
@@ -400,6 +412,17 @@ class ConfigStore:
         )
         self.data["deepstream"]["tracker"].setdefault("enable-batch-process", 1)
         self.data["deepstream"]["tracker"].setdefault("enable-past-frame", 0)
+        self.data["deepstream"].setdefault("watchdog", {})
+        self.data["deepstream"]["watchdog"].setdefault("enabled", True)
+        self.data["deepstream"]["watchdog"].setdefault(
+            "initial_grace_sec",
+            DEFAULT_DEEPSTREAM_WATCHDOG_INITIAL_GRACE_SEC,
+        )
+        self.data["deepstream"]["watchdog"].setdefault("stall_sec", DEFAULT_DEEPSTREAM_WATCHDOG_STALL_SEC)
+        self.data["deepstream"]["watchdog"].setdefault(
+            "check_interval_sec",
+            DEFAULT_DEEPSTREAM_WATCHDOG_CHECK_INTERVAL_SEC,
+        )
         self.data["opencv"].setdefault("detector", "hog")
         self.data["opencv"].setdefault("detect_every_n_frames", 4)
         self.data["opencv"].setdefault("detect_resize_width", 640)
@@ -2098,6 +2121,15 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
         }
         for cam in cameras
     }
+    frame_health_lock = threading.RLock()
+    frame_health = {
+        str(cam["id"]): {
+            "last_frame_monotonic": None,
+            "last_frame_utc": None,
+            "frames": 0,
+        }
+        for cam in cameras
+    }
 
     def update_processing_fps(cam_id: str) -> float:
         state = processing_fps[cam_id]
@@ -2215,6 +2247,11 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
                 cam = cameras[src_idx]
                 cam_id = str(cam["id"])
                 l_obj = frame_meta.obj_meta_list
+                with frame_health_lock:
+                    cam_health = frame_health[cam_id]
+                    cam_health["last_frame_monotonic"] = time.monotonic()
+                    cam_health["last_frame_utc"] = utc_now_iso()
+                    cam_health["frames"] += 1
 
                 while l_obj is not None:
                     try:
@@ -2250,6 +2287,21 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
     bus_handler_id = bus.connect("message", bus_call, loop, runtime_state)
 
     interval_sec = int(settings.get("interval_sec", 60))
+    watchdog_cfg = ds_cfg.get("watchdog", {}) or {}
+    watchdog_enabled = bool(watchdog_cfg.get("enabled", True))
+    watchdog_initial_grace_sec = max(
+        int(watchdog_cfg.get("initial_grace_sec", DEFAULT_DEEPSTREAM_WATCHDOG_INITIAL_GRACE_SEC)),
+        1,
+    )
+    watchdog_stall_sec = max(
+        int(watchdog_cfg.get("stall_sec", DEFAULT_DEEPSTREAM_WATCHDOG_STALL_SEC)),
+        1,
+    )
+    watchdog_check_interval_sec = max(
+        int(watchdog_cfg.get("check_interval_sec", DEFAULT_DEEPSTREAM_WATCHDOG_CHECK_INTERVAL_SEC)),
+        1,
+    )
+    pipeline_started_monotonic = time.monotonic()
 
     def minute_tick():
         with store.lock:
@@ -2263,11 +2315,56 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
         return True
 
     interval_source_id = GLib.timeout_add_seconds(interval_sec, minute_tick)
+    watchdog_source_id = 0
+
+    def watchdog_tick():
+        nonlocal watchdog_source_id
+        if not watchdog_enabled:
+            return True
+
+        now = time.monotonic()
+        stale = []
+        with frame_health_lock:
+            for cam in cameras:
+                cam_id = str(cam["id"])
+                cam_health = frame_health[cam_id]
+                last_frame = cam_health["last_frame_monotonic"]
+                if last_frame is None:
+                    elapsed = now - pipeline_started_monotonic
+                    if elapsed >= watchdog_initial_grace_sec:
+                        stale.append(f"{cam_id}: sin primer frame despues de {elapsed:.0f}s")
+                else:
+                    elapsed = now - float(last_frame)
+                    if elapsed >= watchdog_stall_sec:
+                        last_frame_utc = cam_health["last_frame_utc"] or "desconocido"
+                        stale.append(
+                            f"{cam_id}: ultimo frame hace {elapsed:.0f}s "
+                            f"(ultimo={last_frame_utc}, frames={cam_health['frames']})"
+                        )
+
+        if not stale:
+            return True
+
+        reason = "Watchdog DeepStream detecto fuente(s) sin frames: " + "; ".join(stale)
+        print(f"[ERROR] {reason}")
+        runtime_state["restart_reason"] = reason
+        watchdog_source_id = 0
+        loop.quit()
+        return False
+
+    if watchdog_enabled:
+        watchdog_source_id = GLib.timeout_add_seconds(watchdog_check_interval_sec, watchdog_tick)
 
     print(f"Iniciando pipeline con {len(cameras)} camaras...")
     mqtt_cfg = store.data.get("settings", {}).get("mqtt", {})
     active_topic = mqtt_cfg.get("topic_template") or mqtt_cfg.get("topic")
     print(f"Envio MQTT cada {interval_sec}s a topic/template: {active_topic}")
+    if watchdog_enabled:
+        print(
+            "[INFO] Watchdog DeepStream activo: "
+            f"initial_grace={watchdog_initial_grace_sec}s, "
+            f"stall={watchdog_stall_sec}s, check={watchdog_check_interval_sec}s"
+        )
     pipeline.set_state(Gst.State.PLAYING)
 
     try:
@@ -2291,6 +2388,8 @@ def run_counter(store: ConfigStore, no_display: bool = False) -> Optional[str]:
             shutdown_watchdog = start_shutdown_watchdog()
         if interval_source_id:
             GLib.source_remove(interval_source_id)
+        if watchdog_source_id:
+            GLib.source_remove(watchdog_source_id)
         if bus_handler_id:
             bus.disconnect(bus_handler_id)
         bus.remove_signal_watch()
@@ -2358,10 +2457,7 @@ def main():
     if backend == "opencv":
         run_counter_opencv(store, no_display=args.no_display)
     else:
-        startup_wait_sec = max(
-            int(os.environ.get("RTSP_STARTUP_WAIT_SEC", DEFAULT_RTSP_STARTUP_WAIT_SEC)),
-            0,
-        )
+        startup_wait_sec = int(os.environ.get("RTSP_STARTUP_WAIT_SEC", DEFAULT_RTSP_STARTUP_WAIT_SEC))
         if not wait_for_rtsp_sources(store.data.get("cameras", []), startup_wait_sec):
             return 1
         retry_delay_sec = 10

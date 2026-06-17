@@ -88,6 +88,22 @@ def main() -> int:
     config.setdefault("runtime", {})["backend"] = env("BACKEND") or config.get("runtime", {}).get("backend", "deepstream")
 
     deepstream = config.setdefault("deepstream", {})
+    watchdog = deepstream.setdefault("watchdog", {})
+    if env("DEEPSTREAM_WATCHDOG_ENABLED"):
+        watchdog["enabled"] = env_bool("DEEPSTREAM_WATCHDOG_ENABLED", bool(watchdog.get("enabled", True)))
+    if env("DEEPSTREAM_WATCHDOG_INITIAL_GRACE_SEC"):
+        watchdog["initial_grace_sec"] = env_int(
+            "DEEPSTREAM_WATCHDOG_INITIAL_GRACE_SEC",
+            int(watchdog.get("initial_grace_sec", 600)),
+        )
+    if env("DEEPSTREAM_WATCHDOG_STALL_SEC"):
+        watchdog["stall_sec"] = env_int("DEEPSTREAM_WATCHDOG_STALL_SEC", int(watchdog.get("stall_sec", 120)))
+    if env("DEEPSTREAM_WATCHDOG_CHECK_INTERVAL_SEC"):
+        watchdog["check_interval_sec"] = env_int(
+            "DEEPSTREAM_WATCHDOG_CHECK_INTERVAL_SEC",
+            int(watchdog.get("check_interval_sec", 10)),
+        )
+
     processed_rtsp = deepstream.setdefault("processed_rtsp", {})
     if env("PROCESSED_RTSP_ENABLED"):
         processed_rtsp["enabled"] = env_bool("PROCESSED_RTSP_ENABLED", bool(processed_rtsp.get("enabled", False)))

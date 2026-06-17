@@ -129,7 +129,11 @@ INTERVAL_SEC=60
 BACKEND=deepstream
 NO_DISPLAY=1
 SETUP_PEOPLENET=1
-RTSP_STARTUP_WAIT_SEC=60
+RTSP_STARTUP_WAIT_SEC=-1
+DEEPSTREAM_WATCHDOG_ENABLED=1
+DEEPSTREAM_WATCHDOG_INITIAL_GRACE_SEC=600
+DEEPSTREAM_WATCHDOG_STALL_SEC=120
+DEEPSTREAM_WATCHDOG_CHECK_INTERVAL_SEC=10
 CONFIG_OVERWRITE=0
 CONFIG_PRESERVE_STATE=1
 MQTT_QOS=1
@@ -144,7 +148,9 @@ PROCESSED_RTSP_FPS=5
 PROCESSED_RTSP_BITRATE=1000000
 ```
 
-`RTSP_STARTUP_WAIT_SEC` evita iniciar CUDA/GStreamer mientras una fuente RTSP aun no publica. Esto elimina reinicios innecesarios cuando MediaMTX y el restreamer se recuperan con algunos segundos de diferencia.
+`RTSP_STARTUP_WAIT_SEC` evita iniciar CUDA/GStreamer mientras una fuente RTSP aun no publica. Usa `-1` para esperar indefinidamente hasta que el RTSP vuelva, que es el modo recomendado en Coolify para cortes largos de camara, red o restreamer. Usa `0` para no esperar y un valor positivo para esperar hasta N segundos.
+
+`DEEPSTREAM_WATCHDOG_ENABLED=1` hace que el proceso se reinicie si una camara deja de entregar frames al punto del conteo. `DEEPSTREAM_WATCHDOG_INITIAL_GRACE_SEC` da margen al primer arranque y a la compilacion TensorRT; `DEEPSTREAM_WATCHDOG_STALL_SEC` define cuantos segundos sin frames se toleran despues de haber iniciado. Cuando dispara, el log muestra la camara afectada y Docker/Coolify reinicia el contenedor por `restart: unless-stopped`.
 
 Si `PROCESSED_RTSP_ENABLED=1`, el servicio publica un RTSP H.264 con el mosaico procesado después de `nvosd`. Si hay 4 cámaras, verás una grilla 2x2 con overlays; si hay una sola cámara, verás esa cámara completa. La URL externa normalmente será:
 

@@ -39,6 +39,12 @@
       "ll-config-file": "/opt/nvidia/deepstream/deepstream-7.1/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml",
       "enable-batch-process": 1,
       "enable-past-frame": 0
+    },
+    "watchdog": {
+      "enabled": true,
+      "initial_grace_sec": 600,
+      "stall_sec": 120,
+      "check_interval_sec": 10
     }
   },
   "cameras": [
